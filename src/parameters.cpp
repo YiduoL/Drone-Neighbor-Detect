@@ -104,6 +104,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<bool>("nearfield.enable", false);
     nh->declare_parameter<double>("nearfield.near_range", 3.5);
     nh->declare_parameter<double>("nearfield.blind_override", 0.1);
+    nh->declare_parameter<double>("nearfield.z_half_height", 1.0);
     nh->declare_parameter<bool>("nearfield.join_update", false);
     nh->declare_parameter<bool>("nearfield.publish_world", true);
     nh->declare_parameter<bool>("nearfield.publish_raw", true);
@@ -179,6 +180,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("nearfield.enable", p_pre->nearfield_enable);
     nh->get_parameter("nearfield.near_range", p_pre->nearfield_near_range);
     nh->get_parameter("nearfield.blind_override", p_pre->nearfield_blind_override);
+    nh->get_parameter("nearfield.z_half_height", p_pre->nearfield_z_half_height);
     nh->get_parameter("nearfield.join_update", p_pre->nearfield_join_update);
     nh->get_parameter("nearfield.publish_world", nearfield_publish_world);
     nh->get_parameter("nearfield.publish_raw", nearfield_publish_raw);

@@ -125,12 +125,22 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
         if (!distinct) continue;
 
         const double range_sq = point.x * point.x + point.y * point.y + point.z * point.z;
+        const double horiz_range_sq = point.x * point.x + point.y * point.y;
 
         // Near-field: zero-downsample, full resolution, does NOT go through point_filter_num.
         // Uses its own blind radius (nearfield_blind_override) instead of the main `blind`,
         // since the main blind is tuned for far-field decimation and may be set larger than
         // near_range, which would otherwise silently drop close-in targets.
-        if (nearfield_enable && range_sq > nearfield_blind_sq && range_sq <= near_range_sq) {
+        //
+        // Membership is a CYLINDER (horiz_range_sq <= near_range_sq AND |z| <=
+        // z_half_height), not the sphere `range_sq <= near_range_sq` this used to be --
+        // a spherical near-field pulls in ceiling/floor structure whenever the platform's
+        // altitude brings it within near_range of an overhead/underfoot surface, even
+        // though a real neighbor drone is never >z_half_height above/below at this
+        // horizontal range. See PIPELINE.md ceiling false-positive diagnosis.
+        const bool in_nearfield_cylinder = horiz_range_sq <= near_range_sq &&
+                                           std::abs(point.z) <= nearfield_z_half_height;
+        if (nearfield_enable && range_sq > nearfield_blind_sq && in_nearfield_cylinder) {
             pl_nearfield.push_back(point);
             if (nearfield_join_update && valid_num % point_filter_num == 0 && range_sq > blind * blind) {
                 pl_surf.push_back(point);

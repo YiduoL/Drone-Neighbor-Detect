@@ -66,7 +66,7 @@ int nf_idx = 0;
 PointCloudXYZI::Ptr nearfield_raw_buf(new PointCloudXYZI());    // raw lidar-frame, accumulated this frame
 PointCloudXYZI::Ptr nearfield_world_buf(new PointCloudXYZI());  // world-frame, accumulated this frame
 
-// OS-Deskew C2: fixed-lag RTS smoother refinement (see FixedLagSmoother.hpp / OS-DESKEW.md §5.2).
+// OS-Deskew C2: fixed-lag RTS smoother refinement (see FixedLagSmoother.hpp / PIPELINE.md §5.2).
 // Pure add-on layer: never touches kf_output/kf_input.
 PoseFixedLagSmoother pose_smoother;
 bool pose_smoother_configured = false;

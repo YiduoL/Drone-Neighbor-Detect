@@ -4,7 +4,7 @@
 // This is a PURE ADD-ON LAYER: it never feeds back into the main IKFoM filter (kf_output /
 // kf_input), it only post-processes the causal state stream Point-LIO already produces, to
 // give near-field output points a second, higher-accuracy (but lagged) pose to be transformed
-// through. See OS-DESKEW.md section 5.2 for the design rationale.
+// through. See PIPELINE.md section 5.2 for the design rationale.
 //
 // It treats the causal state stream itself as a sequence of noisy observations of an
 // underlying smooth trajectory, and runs a standard two-pass (forward Kalman filter +
@@ -15,7 +15,7 @@
 //     window's reference rotation (the window's first node), measuring the causal log-map
 //     deviation
 // This is a deliberate simplification of a literal joint IKFoM RTS derivation (which would
-// require the filter's internal process Jacobians at every step) -- see OS-DESKEW.md's
+// require the filter's internal process Jacobians at every step) -- see PIPELINE.md's
 // pilot-experiment section for why this class of approximation is an accepted first step.
 
 #include <deque>

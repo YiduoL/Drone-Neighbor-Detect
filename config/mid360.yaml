@@ -65,7 +65,15 @@
 
         nearfield:
             enable: false
-            near_range: 3.5              # near-field upper bound (m), zero-downsample below this
+            near_range: 3.5              # near-field CYLINDER horizontal radius (m), zero-downsample within it
+            z_half_height: 1.0           # near-field cylinder vertical half-height (m); membership is
+                                         # horiz_range<=near_range AND |z|<=z_half_height, NOT a sphere --
+                                         # a sphere pulls in ceiling/floor structure whenever the platform's
+                                         # altitude brings it within near_range of an overhead/underfoot
+                                         # surface, causing DUFOMap false positives there (real neighbor
+                                         # drones are never >z_half_height above/below at this range).
+                                         # NOTE: this is in the sensor's own body frame (near-level-flight
+                                         # assumption), not world/gravity frame.
             blind_override: 0.1          # near-field-only blind radius; NOTE main preprocess.blind
                                          # above is tuned for far-field decimation and may be set
                                          # larger than near_range, which would silently drop

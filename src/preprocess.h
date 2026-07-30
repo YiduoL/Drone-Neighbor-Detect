@@ -165,6 +165,14 @@ public:
     double nearfield_near_range = 3.5;
     double nearfield_blind_override = 0.1;
     bool nearfield_join_update = false;
+    // Near-field membership is a CYLINDER (horizontal radius nearfield_near_range,
+    // vertical half-height nearfield_z_half_height), not a sphere -- a sphere pulls in
+    // ceiling/floor structure whenever the platform gets close enough vertically, even
+    // though a neighbor drone is never going to be >1m above/below in the same near-field
+    // horizontal radius. This check is in the sensor's own (near-level-flight) body frame,
+    // not world/gravity frame -- cheap and matches this function's existing per-point
+    // body-frame math, but will under/over-cover during aggressive roll/pitch.
+    double nearfield_z_half_height = 1.0;
 
 
 private:
