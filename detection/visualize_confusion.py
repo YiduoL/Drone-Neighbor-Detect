@@ -350,7 +350,16 @@ def main():
     ap.add_argument("--segment-seconds", type=float, default=60.0)
     ap.add_argument("--target-total", type=int, default=5000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--far-sample", type=int, default=150,
+                    help="random subsample cap on far-field (gray context) points "
+                         "shown per frame -- display only, does not affect the causal "
+                         "detector (dm.run still sees the full far_pts_f). Set to 0 to "
+                         "disable subsampling (full resolution, much larger files).")
+    ap.add_argument("--near-sample", type=int, default=200,
+                    help="same, but for the gray (undetected) subset of near-field "
+                         "context points -- TP/FP points are always kept in full.")
     args = ap.parse_args()
+    rng = np.random.default_rng(args.seed)
 
     host_name = args.host
     other_name = "swarm2" if host_name == "swarm1" else "swarm1"
@@ -433,11 +442,29 @@ def main():
             near_colors[tp_mask] = [0.13, 0.65, 0.13]
             near_colors[fp_mask] = [1.0, 0.15, 0.1]
             disp_near = aligned
+
+            # Display-only subsample of the gray (undetected) near-field context points --
+            # TP/FP points are the detector's real output and are always kept in full.
+            gray_mask = ~(tp_mask | fp_mask)
+            gray_idx = np.flatnonzero(gray_mask)
+            if args.near_sample > 0 and len(gray_idx) > args.near_sample:
+                drop = rng.choice(gray_idx, len(gray_idx) - args.near_sample, replace=False)
+                keep = np.ones(len(disp_near), dtype=bool)
+                keep[drop] = False
+                disp_near = disp_near[keep]
+                near_colors = near_colors[keep]
         else:
             near_colors = np.zeros((0, 3))
             disp_near = np.zeros((0, 3))
 
-        far_pts_disp_aligned = (R @ far_pts_f.T).T + t if len(far_pts_f) else np.zeros((0, 3))
+        # Display-only subsample of far-field (gray) context points, purely to keep the
+        # HTML file small -- dm.run() above already saw the full-resolution far_pts_f,
+        # so this has no effect on the detector or the reported metrics.
+        if args.far_sample > 0 and len(far_pts_f) > args.far_sample:
+            far_disp_src = far_pts_f[rng.choice(len(far_pts_f), args.far_sample, replace=False)]
+        else:
+            far_disp_src = far_pts_f
+        far_pts_disp_aligned = (R @ far_disp_src.T).T + t if len(far_disp_src) else np.zeros((0, 3))
         far_colors_disp = np.tile(np.array([0.88, 0.88, 0.9]), (len(far_pts_disp_aligned), 1))
 
         disp_pts = np.concatenate([disp_near, far_pts_disp_aligned], axis=0)

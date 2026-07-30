@@ -10,6 +10,10 @@ stages, see [`PIPELINE.md`](PIPELINE.md) for the full design and validation of b
 - **Detection** ([`detection/`](detection/README.md)): causal background subtraction
   and dynamic-point detection on top of the deskewed near-field stream.
 
+**Interactive visualizations:** [YiduoL.github.io/Drone-Neighbor-Detect](https://YiduoL.github.io/Drone-Neighbor-Detect/)
+-- per-segment detector output, the ceiling false-positive diagnostic, and other
+supporting visualizations, viewable directly in a browser.
+
 ## Deskew pipeline summary
 
 - **C1 (zero extra latency):** near-field points (0.1-3.5 m, cylindrical gate ±1 m in
