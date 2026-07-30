@@ -95,10 +95,9 @@ def kabsch_transform(src, dst):
 
 def write_segment_html(out_html, seg_pts, seg_colors, seg_times, traj,
                        tp, fn, fp, host, other_name, seg_lo, seg_hi):
-    """Left panel: ONLY this frame's DETECTED (dynamic-labeled) points -- the detector's
-    own honest output (TP green / FP red), with all other near-field and far-field
-    points shown in gray for spatial context -- no GT-derived oracle markers. Right
-    panel: the same, accumulated over time."""
+    """Left panel: this frame's points colored by confusion category against pseudo-GT
+    (TP green / FN orange / FP red), with all other near-field and far-field points
+    shown in gray for spatial context. Right panel: the same, accumulated over time."""
     frame_counts = [len(p) for p in seg_pts]
     cum_counts = np.cumsum(frame_counts).tolist() if frame_counts else [0]
     all_pts = np.concatenate(seg_pts, axis=0) if seg_pts else np.zeros((0, 3))
@@ -143,11 +142,12 @@ def write_segment_html(out_html, seg_pts, seg_colors, seg_times, traj,
 <body>
 <div id="controls">
   <span><b>[{seg_lo},{seg_hi})s</b></span>
-  <span><span class="swatch" style="background:#cccccc;"></span> Background / far-field (context)</span>
+  <span><span class="swatch" style="background:#cccccc;"></span> Background (context, TN)</span>
   <span><span class="swatch" style="background:#22a622;"></span> TP={tp} (detector says dynamic, GT agrees)</span>
+  <span><span class="swatch" style="background:#ff9900;"></span> FN={fn} (GT says other drone, detector missed it)</span>
   <span><span class="swatch" style="background:#ff2619;"></span> FP={fp} (detector says dynamic, GT says background)</span>
   <span><span class="swatch" style="background:#2266ff;"></span> {host} own trajectory</span>
-  <span style="color:#888;">recall={recall:.3f} (FN={fn} not shown -- by definition not flagged) precision={precision:.3f}</span>
+  <span style="color:#888;">recall={recall:.3f} precision={precision:.3f}</span>
 </div>
 <div id="bboxRow">
   <span><b>Bounding-box clip:</b></span>
@@ -439,8 +439,9 @@ def main():
             near_colors = np.tile(np.array([0.7, 0.7, 0.72]), (len(near_pts_f), 1))
             near_colors[tp_mask] = [0.13, 0.65, 0.13]
             near_colors[fp_mask] = [1.0, 0.15, 0.1]
+            near_colors[fn_mask] = [1.0, 0.6, 0.0]
 
-            colored_mask = tp_mask | fp_mask
+            colored_mask = tp_mask | fp_mask | fn_mask
             colored_pts, colored_colors = aligned[colored_mask], near_colors[colored_mask]
             near_gray_pts, near_gray_colors = aligned[~colored_mask], near_colors[~colored_mask]
         else:
