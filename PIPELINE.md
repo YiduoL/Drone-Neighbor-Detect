@@ -1,4 +1,34 @@
-# OS-Deskew: Output-Side Fixed-Lag Smoothed Deskewing
+# System Pipeline: Ego-Motion Compensation + Neighbor-Drone Detection
+
+Two stages, built and validated together: **OS-Deskew** (Part I) produces a clean,
+full-resolution near-field point stream from a moving platform; **Detection** (Part II)
+consumes that stream to causally flag points belonging to a nearby drone. Sensor:
+Livox Mid-360. Target platform: NVIDIA Jetson. Application: near-field (≤3.5 m)
+neighbor-drone detection for a drone swarm, where a single target may be represented by
+as few as 5-15 LiDAR points.
+
+```
+/livox/lidar ──► [Part I: OS-Deskew, this repo root]  ──► /nearfield/deskewed_world (C1)
+                  Point-LIO fork + cylindrical           /nearfield/refined_world   (C2)
+                  near-field bypass + optional                    │
+                  fixed-lag smoothed refinement                   ▼
+                                                     [Part II: Detection, detection/]
+                                                     causal DUFOMap: per-point
+                                                     static/dynamic classification
+                                                                    │
+                                                                    ▼
+                                                     candidate neighbor-drone points
+```
+
+**Status at a glance:** Part I is implemented and validated (see §4). Part II's core
+algorithm is implemented and validated offline against recorded flights (see
+[`detection/README.md`](detection/README.md)) but has **not** been benchmarked on the
+Jetson target or wired into a live ROS2 node — see Part II §3 for the precise scope of
+what "real-time" does and does not mean here.
+
+---
+
+# Part I: OS-Deskew
 
 **One-line summary:** existing LIO systems perform second-pass deskewing purely to
 improve odometry / registration accuracy (estimation-side, frame-level). This work
@@ -7,10 +37,7 @@ smoother refines Point-LIO's per-point state stream and performs a second, full-
 deskew pass, validated against a downstream drone-detection metric rather than ATE alone.
 
 Built on a fork of [Point-LIO](https://github.com/hku-mars/Point-LIO) (ROS2 port of
-[dfloreaa/point_lio_ros2](https://github.com/dfloreaa/point_lio_ros2)). Sensor: Livox
-Mid-360. Target platform: NVIDIA Jetson. Downstream application: near-field (≤3.5 m)
-neighbor-drone detection for a drone swarm, where a single target may be represented by
-as few as 5-15 LiDAR points.
+[dfloreaa/point_lio_ros2](https://github.com/dfloreaa/point_lio_ros2)).
 
 ---
 
@@ -126,7 +153,7 @@ cut removes points only in a region no real target ever occupies).
 | C1 — decoupled full-resolution near-field deskew | Implemented, validated |
 | C2 — fixed-lag RTS smoothed refinement (v1) | Implemented, validated |
 | Cylindrical near-field gate | Implemented, validated |
-| Downstream detection integration | In progress (separate repo module) |
+| Downstream detection (causal DUFOMap) | Validated offline (see Part II); not yet on Jetson or live |
 
 **Primary use case is zero-latency avoidance, which consumes C1 only.** C2 adds a fixed
 0.1 s latency in exchange for a smoother trajectory and is available for
@@ -209,3 +236,71 @@ os_deskew:
   playback completes. If recording its output with `ros2 bag record`, the resulting
   mcap will be missing its footer metadata — recoverable with
   `ros2 bag reindex <dir> -s mcap`.
+
+---
+
+# Part II: Detection
+
+Code and full write-up: [`detection/`](detection/README.md). Summary below.
+
+## 1. Approach
+
+[DUFOMap](https://github.com/KTH-RPL/dufomap) (RA-L 2024) is used as the underlying
+ray-casting occupancy detector, reformulated as **causal**: DUFOMap's own reference
+usage integrates every frame into its map first and classifies afterward (a two-pass
+batch method that uses future frames to judge past ones). Here, for frame *i*,
+classification (`segment()`) uses only the map built from frames `0..i-1`; the frame is
+integrated into the map (`run()`) only afterward — no look-ahead.
+
+## 2. Evaluation
+
+Two real two-drone flights (LiDAR on one drone, the other as the target) were processed
+through Part I, then evaluated against pseudo-ground-truth labels built by registering
+each flight to a static reference map of the site and cross-referencing the other
+flight's registered trajectory (see `detection/README.md` §2 for the full methodology
+and its caveats — no manual annotation was used, and the pseudo-labels have a known,
+documented source of noise from the two recording devices' clocks never being
+synchronized).
+
+## 3. What "causal" does and does not mean here
+
+- **Architecturally causal / real-time-compatible:** the algorithm never uses future
+  data, and measured per-frame cost (~7-10 ms on a desktop x86 machine) is well within
+  a 10 Hz frame budget.
+- **Not yet benchmarked on Jetson**, the actual deployment target. Desktop timing
+  numbers do not necessarily transfer.
+- **Not yet a live ROS2 node.** All evaluation here reads recorded bags offline; there
+  is no node subscribing to a real-time topic and publishing detections.
+- **Background subtraction (used only to build evaluation labels) is offline**, an ICP
+  registration against a pre-built static reference map. It is not part of, and is not
+  needed for, the causal detector's own real-time path.
+
+## 4. Key results
+
+- Parameter ablation selected `d_p=2` (`d_p=1` gives much worse precision for a small
+  recall gain); `resolution`/`d_s` trade recall against precision without a value that
+  wins on both evaluated flights.
+- A precision collapse (from ~1.00 down to ~0.01 in the worst 60 s segment) was traced
+  to a **spatially local cold start**: it began exactly when the platform entered a
+  part of the space it had never observed before, independent of total elapsed flight
+  time (180 s of prior flight time gave no protection once a new region was entered).
+- The false positives above were further traced to a **ceiling/overhead structure**:
+  94% fell in a narrow height band matching a high-density layer of the reference map,
+  with zero true detections there. This motivated the cylindrical near-field gate
+  (Part I §2.3): removing points above a height cutoff recovered nearly all lost
+  precision at zero recall cost. A separate voxel-gating/clustering/tracking approach
+  was also tried and discarded in favor of this simpler, more effective source-level
+  fix.
+- **Hovering does not hurt detection**: measured recall was higher for pseudo-GT
+  points matched to a hovering segment of the other drone's trajectory (88%) than to a
+  moving segment (76%), the opposite of the usual theoretical concern for occupancy-
+  based dynamic-point detectors.
+
+## 5. Scope and limitations
+
+- Pseudo-GT labels are spatial-proximity-based, not time-synchronized between the two
+  flights (no shared clock was available) — a documented, only partially mitigated
+  source of label noise.
+- Evaluated on two flights at one site; no cross-site generalization evidence yet.
+- See §3 above for the real-time verification gap (Jetson benchmark, live ROS2
+  integration) — both are future work, not yet done.

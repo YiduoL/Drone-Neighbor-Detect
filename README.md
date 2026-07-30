@@ -1,15 +1,16 @@
 # Drone-Neighbor-Detect
 
-Real-time neighbor-drone detection for drone swarms using an onboard Livox Mid-360
-LiDAR.
+Neighbor-drone detection for drone swarms using an onboard Livox Mid-360 LiDAR. Two
+stages, see [`PIPELINE.md`](PIPELINE.md) for the full design and validation of both:
 
-This module covers **ego-motion compensation**: a modified [Point-LIO](https://github.com/hku-mars/Point-LIO)
-(ROS2 port, forked from [dfloreaa/point_lio_ros2](https://github.com/dfloreaa/point_lio_ros2))
-with an added near-field deskewing path, producing clean full-resolution input for the
-downstream detection stage (background subtraction + dynamic-target detection). See
-[`PIPELINE.md`](PIPELINE.md) for the full design and validation.
+- **Ego-motion compensation** (this repo's root): a modified
+  [Point-LIO](https://github.com/hku-mars/Point-LIO) (ROS2 port, forked from
+  [dfloreaa/point_lio_ros2](https://github.com/dfloreaa/point_lio_ros2)) with an added
+  near-field deskewing path, producing clean full-resolution input for detection.
+- **Detection** ([`detection/`](detection/README.md)): causal background subtraction
+  and dynamic-point detection on top of the deskewed near-field stream.
 
-## Summary
+## OS-Deskew summary
 
 - **C1 (zero extra latency):** near-field points (0.1-3.5 m, cylindrical gate ±1 m in
   height) bypass the main EKF update and decimation entirely, and are deskewed
