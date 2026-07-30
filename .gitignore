@@ -1,0 +1,12 @@
+/.idea/
+/cmake-build-debug/
+*.pcd
+/Log/pos_log.csv
+
+# colcon build artifacts (this package sits directly under ros2_ws/src/, colcon
+# generates these as siblings of the package when built in-place)
+/build/
+/install/
+/log/
+__pycache__/
+image/
