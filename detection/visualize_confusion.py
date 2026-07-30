@@ -2,11 +2,13 @@
 """Visualize the causal detector's output against pseudo-GT, one Three.js HTML file per
 fixed-length time segment (map must still build causally from frame 0 across the whole
 flight -- only the display is segmented, not the causal pass):
-  - left panel: current frame's near+far-field points, TP/FP colored, gray otherwise
+  - left panel: current frame's near+far-field points, colored by confusion category
+    against pseudo-GT (TP green / FN orange / FP red, rendered larger so they're
+    visible on a single frame, not just once accumulated), gray otherwise
   - right panel: same, accumulated over the segment
-  - the OTHER flight's trajectory drawn in the same shared (reference-map-registered)
-    frame, so a false-positive cluster's location can be checked against where the
-    other drone was actually flying
+  - the platform's own trajectory drawn in the same shared (reference-map-registered)
+    frame, so a false-positive/false-negative cluster's location can be checked against
+    where the platform actually was
   - an interactive XYZ bounding-box clip (six range sliders), implemented with Three.js
     clipping planes (GPU-side, no geometry rebuild on every slider move -- stays smooth
     even with a few million accumulated points) so a specific region can be isolated
@@ -93,27 +95,37 @@ def kabsch_transform(src, dst):
     return T
 
 
-def write_segment_html(out_html, seg_pts, seg_colors, seg_times, traj,
-                       tp, fn, fp, host, other_name, seg_lo, seg_hi):
+def write_segment_html(out_html, seg_colored_pts, seg_colored_colors, seg_gray_pts,
+                       seg_gray_colors, seg_times, traj, tp, fn, fp, host, other_name,
+                       seg_lo, seg_hi):
     """Left panel: this frame's points colored by confusion category against pseudo-GT
-    (TP green / FN orange / FP red), with all other near-field and far-field points
-    shown in gray for spatial context. Right panel: the same, accumulated over time."""
-    frame_counts = [len(p) for p in seg_pts]
-    cum_counts = np.cumsum(frame_counts).tolist() if frame_counts else [0]
-    all_pts = np.concatenate(seg_pts, axis=0) if seg_pts else np.zeros((0, 3))
-    all_colors = np.concatenate(seg_colors, axis=0) if seg_colors else np.zeros((0, 3))
+    (TP green / FN orange / FP red, rendered larger), with all other near-field and
+    far-field points shown in small gray for spatial context. Right panel: the same,
+    accumulated over time. Colored and gray points are kept in separate typed arrays
+    (not just separate colors) so they can use different THREE.PointsMaterial sizes --
+    a single shared material can't vary point size per point without a custom shader."""
+    colored_frame_counts = [len(p) for p in seg_colored_pts]
+    colored_cum_counts = np.cumsum(colored_frame_counts).tolist() if colored_frame_counts else [0]
+    all_colored_pts = np.concatenate(seg_colored_pts, axis=0) if seg_colored_pts else np.zeros((0, 3))
+    all_colored_colors = np.concatenate(seg_colored_colors, axis=0) if seg_colored_colors else np.zeros((0, 3))
+
+    gray_frame_counts = [len(p) for p in seg_gray_pts]
+    gray_cum_counts = np.cumsum(gray_frame_counts).tolist() if gray_frame_counts else [0]
+    all_gray_pts = np.concatenate(seg_gray_pts, axis=0) if seg_gray_pts else np.zeros((0, 3))
+    all_gray_colors = np.concatenate(seg_gray_colors, axis=0) if seg_gray_colors else np.zeros((0, 3))
 
     def flat(a):
         return np.asarray(a, dtype=np.float64).flatten().round(4).tolist()
 
-    bbox_src = np.concatenate([all_pts, traj], axis=0) if len(all_pts) else traj
+    bbox_src = np.concatenate([all_colored_pts, all_gray_pts, traj], axis=0) \
+        if (len(all_colored_pts) + len(all_gray_pts)) else traj
     if len(bbox_src) == 0:
         bbox_src = traj
     mins = bbox_src.min(axis=0)
     maxs = bbox_src.max(axis=0)
     center = ((mins + maxs) / 2).tolist()
     radius = max(float(np.linalg.norm(maxs - mins) / 2), 1.0)
-    n_frames_disp = len(seg_pts)
+    n_frames_disp = len(seg_times)
     recall = tp / max(tp + fn, 1)
     precision = tp / max(tp + fp, 1)
 
@@ -169,10 +181,14 @@ def write_segment_html(out_html, seg_pts, seg_colors, seg_times, traj,
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
-const ALL_PTS = new Float32Array({json.dumps(flat(all_pts))});
-const ALL_COLORS = new Float32Array({json.dumps(flat(all_colors))});
-const FRAME_COUNTS = {json.dumps(frame_counts)};
-const CUM_COUNTS = {json.dumps(cum_counts)};
+const ALL_COLORED_PTS = new Float32Array({json.dumps(flat(all_colored_pts))});
+const ALL_COLORED_COLORS = new Float32Array({json.dumps(flat(all_colored_colors))});
+const COLORED_FRAME_COUNTS = {json.dumps(colored_frame_counts)};
+const COLORED_CUM_COUNTS = {json.dumps(colored_cum_counts)};
+const ALL_GRAY_PTS = new Float32Array({json.dumps(flat(all_gray_pts))});
+const ALL_GRAY_COLORS = new Float32Array({json.dumps(flat(all_gray_colors))});
+const GRAY_FRAME_COUNTS = {json.dumps(gray_frame_counts)};
+const GRAY_CUM_COUNTS = {json.dumps(gray_cum_counts)};
 const FRAME_TIMES = {json.dumps([round(t, 3) for t in seg_times])};
 const TRAJ_FLAT = new Float32Array({json.dumps(flat(traj))});
 const BBOX_CENTER = {json.dumps(center)};
@@ -219,32 +235,47 @@ const trajMat = new THREE.LineBasicMaterial({{ color: 0x2266ff, clippingPlanes: 
 left.scene.add(new THREE.Line(trajGeom, trajMat));
 right.scene.add(new THREE.Line(trajGeom.clone(), trajMat));
 
-const curGeom = new THREE.BufferGeometry();
-const curMat = new THREE.PointsMaterial({{ size: 0.09, vertexColors: true, clippingPlanes: clipPlanes }});
-const curPoints = new THREE.Points(curGeom, curMat);
-left.scene.add(curPoints);
+// Gray (background/TN context) points: small, rendered first.
+const curGrayGeom = new THREE.BufferGeometry();
+const curGrayMat = new THREE.PointsMaterial({{ size: 0.09, vertexColors: true, clippingPlanes: clipPlanes }});
+left.scene.add(new THREE.Points(curGrayGeom, curGrayMat));
 
-const accGeom = new THREE.BufferGeometry();
-const accMat = new THREE.PointsMaterial({{ size: 0.06, vertexColors: true, clippingPlanes: clipPlanes }});
-const accPoints = new THREE.Points(accGeom, accMat);
-right.scene.add(accPoints);
+const accGrayGeom = new THREE.BufferGeometry();
+const accGrayMat = new THREE.PointsMaterial({{ size: 0.06, vertexColors: true, clippingPlanes: clipPlanes }});
+right.scene.add(new THREE.Points(accGrayGeom, accGrayMat));
+
+// TP/FN/FP points: rendered much larger so they're visible even in a single frame,
+// not just once accumulated over many frames.
+const curColoredGeom = new THREE.BufferGeometry();
+const curColoredMat = new THREE.PointsMaterial({{ size: 0.4, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
+left.scene.add(new THREE.Points(curColoredGeom, curColoredMat));
+
+const accColoredGeom = new THREE.BufferGeometry();
+const accColoredMat = new THREE.PointsMaterial({{ size: 0.3, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
+right.scene.add(new THREE.Points(accColoredGeom, accColoredMat));
+
+function sliceInto(geom, allPts, allColors, start, end) {{
+  geom.setAttribute('position', new THREE.BufferAttribute(allPts.subarray(start*3, end*3), 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(allColors.subarray(start*3, end*3), 3));
+  geom.attributes.position.needsUpdate = true;
+  geom.attributes.color.needsUpdate = true;
+}}
 
 function setFrame(idx) {{
-  if (FRAME_COUNTS.length === 0) return;
-  const start = idx === 0 ? 0 : CUM_COUNTS[idx-1];
-  const end = CUM_COUNTS[idx];
-  curGeom.setAttribute('position', new THREE.BufferAttribute(ALL_PTS.subarray(start*3, end*3), 3));
-  curGeom.setAttribute('color', new THREE.BufferAttribute(ALL_COLORS.subarray(start*3, end*3), 3));
-  curGeom.attributes.position.needsUpdate = true;
-  curGeom.attributes.color.needsUpdate = true;
+  if (COLORED_FRAME_COUNTS.length === 0) return;
+  const cStart = idx === 0 ? 0 : COLORED_CUM_COUNTS[idx-1];
+  const cEnd = COLORED_CUM_COUNTS[idx];
+  const gStart = idx === 0 ? 0 : GRAY_CUM_COUNTS[idx-1];
+  const gEnd = GRAY_CUM_COUNTS[idx];
 
-  accGeom.setAttribute('position', new THREE.BufferAttribute(ALL_PTS.subarray(0, end*3), 3));
-  accGeom.setAttribute('color', new THREE.BufferAttribute(ALL_COLORS.subarray(0, end*3), 3));
-  accGeom.attributes.position.needsUpdate = true;
-  accGeom.attributes.color.needsUpdate = true;
+  sliceInto(curColoredGeom, ALL_COLORED_PTS, ALL_COLORED_COLORS, cStart, cEnd);
+  sliceInto(curGrayGeom, ALL_GRAY_PTS, ALL_GRAY_COLORS, gStart, gEnd);
+  sliceInto(accColoredGeom, ALL_COLORED_PTS, ALL_COLORED_COLORS, 0, cEnd);
+  sliceInto(accGrayGeom, ALL_GRAY_PTS, ALL_GRAY_COLORS, 0, gEnd);
 
+  const nPts = COLORED_FRAME_COUNTS[idx] + GRAY_FRAME_COUNTS[idx];
   document.getElementById('frameLabel').textContent =
-    `frame ${{idx}} / {max(n_frames_disp-1,0)}, t=${{FRAME_TIMES[idx] !== undefined ? FRAME_TIMES[idx].toFixed(2) : '?'}}s, points=${{FRAME_COUNTS[idx]}}`;
+    `frame ${{idx}} / {max(n_frames_disp-1,0)}, t=${{FRAME_TIMES[idx] !== undefined ? FRAME_TIMES[idx].toFixed(2) : '?'}}s, points=${{nPts}} (${{COLORED_FRAME_COUNTS[idx]}} TP/FN/FP)`;
 }}
 setFrame(0);
 
@@ -412,7 +443,9 @@ def main():
         dm.run(far_pts_f, pose, cloud_transform=False)
 
         seg_idx = int(t_rel // args.segment_seconds)
-        seg = segments.setdefault(seg_idx, {"pts": [], "colors": [], "times": [], "traj": [],
+        seg = segments.setdefault(seg_idx, {"colored_pts": [], "colored_colors": [],
+                                            "gray_pts": [], "gray_colors": [],
+                                            "times": [], "traj": [],
                                             "tp": 0, "fn": 0, "fp": 0})
 
         aligned_pose = (R @ pose_xyz) + t  # own trajectory point, in shared frame
@@ -463,10 +496,10 @@ def main():
             keep = rng.choice(len(gray_pts), gray_budget, replace=False)
             gray_pts, gray_colors = gray_pts[keep], gray_colors[keep]
 
-        disp_pts = np.concatenate([colored_pts, gray_pts], axis=0)
-        disp_colors = np.concatenate([colored_colors, gray_colors], axis=0)
-        seg["pts"].append(disp_pts)
-        seg["colors"].append(disp_colors)
+        seg["colored_pts"].append(colored_pts)
+        seg["colored_colors"].append(colored_colors)
+        seg["gray_pts"].append(gray_pts)
+        seg["gray_colors"].append(gray_colors)
         seg["times"].append(t_rel)
 
         if i % 500 == 0:
@@ -480,7 +513,8 @@ def main():
         traj_arr = np.array(seg["traj"])
 
         out_html = f"{out_dir}/{host_name}_seg_{int(seg_lo):04d}_{int(seg_hi):04d}.html"
-        write_segment_html(out_html, seg["pts"], seg["colors"], seg["times"],
+        write_segment_html(out_html, seg["colored_pts"], seg["colored_colors"],
+                           seg["gray_pts"], seg["gray_colors"], seg["times"],
                            traj_arr, seg["tp"], seg["fn"], seg["fp"],
                            host_name, other_name, int(seg_lo), int(seg_hi))
 
