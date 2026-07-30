@@ -118,7 +118,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<double>("os_deskew.r_rot", 1e-4);
     nh->declare_parameter<double>("os_deskew.retention_margin", 0.05);
 
-    // 使用get_parameter方法获取参数值
+    // Read parameter values via get_parameter
     nh->get_parameter("odom_only", odom_only);
     nh->get_parameter("odom_header_frame_id", odom_header_frame_id);
     nh->get_parameter("odom_child_frame_id", odom_child_frame_id);

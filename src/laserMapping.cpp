@@ -1115,7 +1115,7 @@ int main(int argc, char **argv) {
         //ros::spinOnce();
         rclcpp::executors::SingleThreadedExecutor executor;
         executor.add_node(nh);
-        executor.spin_some(); // 处理当前可用的回调
+        executor.spin_some(); // process currently available callbacks
 
         if (sync_packages(Measures)) {
             if (flg_first_scan) {
