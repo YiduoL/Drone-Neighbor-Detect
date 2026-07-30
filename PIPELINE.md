@@ -1,6 +1,6 @@
 # System Pipeline: Ego-Motion Compensation + Neighbor-Drone Detection
 
-Two stages, built and validated together: **OS-Deskew** (Part I) produces a clean,
+Two stages, built and validated together: **Deskew Pipeline** (Part I) produces a clean,
 full-resolution near-field point stream from a moving platform; **Detection** (Part II)
 consumes that stream to causally flag points belonging to a nearby drone. Sensor:
 Livox Mid-360. Target platform: NVIDIA Jetson. Application: near-field (≤3.5 m)
@@ -8,7 +8,7 @@ neighbor-drone detection for a drone swarm, where a single target may be represe
 as few as 5-15 LiDAR points.
 
 ```
-/livox/lidar ──► [Part I: OS-Deskew, this repo root]  ──► /nearfield/deskewed_world (C1)
+/livox/lidar ──► [Part I: Deskew Pipeline, this repo root] ──► /nearfield/deskewed_world (C1)
                   Point-LIO fork + cylindrical           /nearfield/refined_world   (C2)
                   near-field bypass + optional                    │
                   fixed-lag smoothed refinement                   ▼
@@ -28,7 +28,7 @@ what "real-time" does and does not mean here.
 
 ---
 
-# Part I: OS-Deskew
+# Part I: Deskew Pipeline
 
 **One-line summary:** existing LIO systems perform second-pass deskewing purely to
 improve odometry / registration accuracy (estimation-side, frame-level). This work
@@ -291,10 +291,14 @@ synchronized).
   precision at zero recall cost. A separate voxel-gating/clustering/tracking approach
   was also tried and discarded in favor of this simpler, more effective source-level
   fix.
-- **Hovering does not hurt detection**: measured recall was higher for pseudo-GT
-  points matched to a hovering segment of the other drone's trajectory (88%) than to a
-  moving segment (76%), the opposite of the usual theoretical concern for occupancy-
-  based dynamic-point detectors.
+- **Hovering does not hurt detection**: after the cylindrical near-field gate fix,
+  recall is 0.996 for pseudo-GT points matched to a hovering segment of the other
+  drone's trajectory (n=2707) and 0.996 for points matched to a moving segment
+  (n=8131) — no measurable gap, contrary to the usual theoretical concern for
+  occupancy-based dynamic-point detectors that a stationary target eventually looks
+  like static structure. (A pre-fix run, when the ceiling issue above still
+  depressed overall recall, showed a spurious hovering/moving split; it disappeared
+  once the ceiling issue was fixed.)
 
 ## 5. Scope and limitations
 

@@ -10,7 +10,7 @@ stages, see [`PIPELINE.md`](PIPELINE.md) for the full design and validation of b
 - **Detection** ([`detection/`](detection/README.md)): causal background subtraction
   and dynamic-point detection on top of the deskewed near-field stream.
 
-## OS-Deskew summary
+## Deskew pipeline summary
 
 - **C1 (zero extra latency):** near-field points (0.1-3.5 m, cylindrical gate ±1 m in
   height) bypass the main EKF update and decimation entirely, and are deskewed

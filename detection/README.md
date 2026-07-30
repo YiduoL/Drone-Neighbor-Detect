@@ -1,7 +1,7 @@
 # Detection: Causal Background Subtraction + Dynamic-Point Detection
 
 Real-time (causal) neighbor-drone detection on top of the near-field point stream
-produced by the OS-Deskew stage (see the top-level [`PIPELINE.md`](../PIPELINE.md)).
+produced by the deskew pipeline stage (see the top-level [`PIPELINE.md`](../PIPELINE.md)).
 Uses [DUFOMap](https://github.com/KTH-RPL/dufomap) (RA-L 2024) as the underlying
 ray-casting occupancy detector, reformulated as a **causal** (history-only,
 no look-ahead) online detector.
@@ -38,7 +38,7 @@ the background model would let a slow-moving or hovering target get absorbed int
 ## 2. Evaluation methodology
 
 Two real two-drone flights (LiDAR mounted on one drone, the other drone as the target)
-were used, each processed through the OS-Deskew pipeline first.
+were used, each processed through the deskew pipeline first.
 
 **Pseudo-ground-truth construction** (no manual annotation): each flight's far-field
 point cloud is ICP-registered to a static reference map of the site (a scan recorded
@@ -78,11 +78,15 @@ recall broken down by elapsed time (cold-start behavior) and by range.
   of the simpler fix.
 - **Hovering does not hurt detection** (`hovering_hypothesis_test.py`): a common
   theoretical concern for occupancy-based dynamic detectors is that a stationary
-  object eventually looks like static structure. Measured recall was in fact *higher*
-  for pseudo-GT points matched to a hovering segment of the other drone's trajectory
-  (88%) than to a moving segment (76%) -- plausibly because a hovering target is
-  observed repeatedly from a stable vantage point, giving the ray-casting logic more
-  consistent evidence than a fast-moving target sampled briefly at each location.
+  object eventually looks like static structure. After the cylindrical near-field
+  gate fix (§2.3 in `PIPELINE.md`), measured recall is 0.996 for pseudo-GT points
+  matched to a hovering segment of the other drone's trajectory (n=2707) and 0.996
+  for points matched to a moving segment (n=8131) -- no measurable gap. (An earlier
+  run on pre-fix data, when overall recall was still depressed by the ceiling
+  false-positive issue, showed a spurious-looking hovering/moving split; that gap
+  disappeared once the ceiling issue was fixed and overall recall rose to 99.6%,
+  confirming it was an artifact of the ceiling issue rather than a real hovering
+  effect.)
 
 ## 4. Scripts
 
