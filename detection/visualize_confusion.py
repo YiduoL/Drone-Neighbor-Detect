@@ -162,6 +162,11 @@ def write_segment_html(out_html, seg_colored_pts, seg_colored_colors, seg_gray_p
   <span style="color:#888;">recall={recall:.3f} precision={precision:.3f}</span>
 </div>
 <div id="bboxRow">
+  <span><b>Point size:</b></span>
+  <div class="axis">TP/FN/FP <input type="range" id="coloredSize" min="0.02" max="0.6" step="0.01" value="0.15"> <span id="coloredSizeLabel"></span></div>
+  <div class="axis">background <input type="range" id="graySize" min="0.01" max="0.2" step="0.005" value="0.06"> <span id="graySizeLabel"></span></div>
+</div>
+<div id="bboxRow">
   <span><b>Bounding-box clip:</b></span>
   <div class="axis">X <input type="range" id="xmin"> - <input type="range" id="xmax"> <span id="xlabel"></span></div>
   <div class="axis">Y <input type="range" id="ymin"> - <input type="range" id="ymax"> <span id="ylabel"></span></div>
@@ -237,22 +242,35 @@ right.scene.add(new THREE.Line(trajGeom.clone(), trajMat));
 
 // Gray (background/TN context) points: small, rendered first.
 const curGrayGeom = new THREE.BufferGeometry();
-const curGrayMat = new THREE.PointsMaterial({{ size: 0.09, vertexColors: true, clippingPlanes: clipPlanes }});
+const curGrayMat = new THREE.PointsMaterial({{ size: 0.06, vertexColors: true, clippingPlanes: clipPlanes }});
 left.scene.add(new THREE.Points(curGrayGeom, curGrayMat));
 
 const accGrayGeom = new THREE.BufferGeometry();
 const accGrayMat = new THREE.PointsMaterial({{ size: 0.06, vertexColors: true, clippingPlanes: clipPlanes }});
 right.scene.add(new THREE.Points(accGrayGeom, accGrayMat));
 
-// TP/FN/FP points: rendered much larger so they're visible even in a single frame,
-// not just once accumulated over many frames.
+// TP/FN/FP points: bigger than background by default so they're visible even in a
+// single frame, not just once accumulated -- both sizes are user-adjustable below.
 const curColoredGeom = new THREE.BufferGeometry();
-const curColoredMat = new THREE.PointsMaterial({{ size: 0.4, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
+const curColoredMat = new THREE.PointsMaterial({{ size: 0.15, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
 left.scene.add(new THREE.Points(curColoredGeom, curColoredMat));
 
 const accColoredGeom = new THREE.BufferGeometry();
-const accColoredMat = new THREE.PointsMaterial({{ size: 0.3, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
+const accColoredMat = new THREE.PointsMaterial({{ size: 0.15, vertexColors: true, clippingPlanes: clipPlanes, sizeAttenuation: true }});
 right.scene.add(new THREE.Points(accColoredGeom, accColoredMat));
+
+const coloredSizeEl = document.getElementById('coloredSize');
+const graySizeEl = document.getElementById('graySize');
+function updatePointSizes() {{
+  const cs = parseFloat(coloredSizeEl.value), gs = parseFloat(graySizeEl.value);
+  curColoredMat.size = cs; accColoredMat.size = cs;
+  curGrayMat.size = gs; accGrayMat.size = gs;
+  document.getElementById('coloredSizeLabel').textContent = cs.toFixed(2);
+  document.getElementById('graySizeLabel').textContent = gs.toFixed(2);
+}}
+coloredSizeEl.addEventListener('input', updatePointSizes);
+graySizeEl.addEventListener('input', updatePointSizes);
+updatePointSizes();
 
 function sliceInto(geom, allPts, allColors, start, end) {{
   geom.setAttribute('position', new THREE.BufferAttribute(allPts.subarray(start*3, end*3), 3));
