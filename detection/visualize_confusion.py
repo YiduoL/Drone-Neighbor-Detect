@@ -405,6 +405,16 @@ def main():
                          "never subsampled. Set to 0 to disable (full resolution, much "
                          "larger files).")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--start-time", type=float, default=0.0,
+                    help="in-flight time (s) to start a FRESH causal map at -- frames "
+                         "before this are never read or fed to the map at all, so this "
+                         "is a genuine cold start at this point in the flight, not just "
+                         "a display window into a map that already warmed up from t=0. "
+                         "Useful for testing cold-start behavior when it begins during "
+                         "fast motion instead of the flight's initial hover/takeoff.")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="stop this many seconds after --start-time (default: run to "
+                         "the end of the bag)")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
 
@@ -433,16 +443,29 @@ def main():
     near = read_cloud_topic(bag_path, args.near_topic)
     far = read_cloud_topic(bag_path, args.far_topic)
     poses = orig_poses_full
-    n = min(len(near), len(far), len(poses))
-    print(f"total frames: {n}, segment length: {args.segment_seconds}s")
+    n_full = min(len(near), len(far), len(poses))
+
+    i0 = next((i for i in range(n_full) if near[i][0] >= args.start_time), 0)
+    if args.duration is not None:
+        n = next((i for i in range(i0, n_full) if near[i][0] >= args.start_time + args.duration), n_full)
+    else:
+        n = n_full
+    print(f"total frames: {n_full}, using frames [{i0}, {n}) "
+          f"(in-flight t=[{near[i0][0]:.1f}s, {near[min(n,n_full-1)][0]:.1f}s]), "
+          f"segment length: {args.segment_seconds}s")
+    if i0 > 0:
+        print(f"  --start-time={args.start_time}s: frames before {i0} are never read or "
+              f"fed to the map -- this is a genuine fresh cold start at t={near[i0][0]:.1f}s, "
+              f"not a display window into an already-warm map")
 
     dm = dufomap(args.resolution, args.d_s, args.d_p, num_threads=0)
 
     t_start = time.time()
     segments = {}
 
-    for i in range(n):
-        t_rel, near_pts = near[i]
+    for i in range(i0, n):
+        t_rel_abs, near_pts = near[i]
+        t_rel = t_rel_abs - near[i0][0]  # display time, rebased to this run's own start
         _, far_pts = far[i]
         pose = poses[i]
         pose_xyz = np.array(pose[:3], dtype=np.float32)
@@ -454,7 +477,7 @@ def main():
         far_mask = (df > MIN_RANGE) & (df < MAX_RANGE)
         far_pts_f = far_pts[far_mask]
 
-        if i == 0 or len(near_pts_f) == 0:
+        if i == i0 or len(near_pts_f) == 0:
             dyn_labels = np.zeros(len(near_pts_f), dtype=np.uint8)
         else:
             dyn_labels = dm.segment(near_pts_f, pose, cloud_transform=False)

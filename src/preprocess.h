@@ -174,6 +174,20 @@ public:
     // body-frame math, but will under/over-cover during aggressive roll/pitch.
     double nearfield_z_half_height = 1.0;
 
+    // Far-field points are decimated at capture time (before EKF processing, not just
+    // before publishing) so Jetson doesn't pay compute for points that get thrown away
+    // anyway. Budget is shared with the near field so total output stays near
+    // far_field_sampling_target_total regardless of how many near-field points this
+    // frame has (near-field count varies a lot frame to frame). Within that budget,
+    // far-field points are weighted-sampled favoring closer range over farther --
+    // large distant flat surfaces (ceiling, far walls) subtend more solid angle and so
+    // naturally dominate a frame's point budget under uniform sampling; range weighting
+    // suppresses that without needing to know what a "ceiling" is (unlike a height-based
+    // filter, this needs no attitude/gravity-frame assumption, so it doesn't degrade
+    // during non-level flight the way the near-field cylinder's body-frame z gate can).
+    bool far_field_sampling_enable = false;
+    int far_field_sampling_target_total = 5000;
+
 
 private:
     void avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);

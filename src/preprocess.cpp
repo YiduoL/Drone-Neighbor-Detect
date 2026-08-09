@@ -1,4 +1,6 @@
 #include "preprocess.h"
+#include <random>
+#include <algorithm>
 
 #define RETURN0     0x00
 #define RETURN0AND1 0x10
@@ -100,6 +102,14 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
     const double near_range_sq = nearfield_near_range * nearfield_near_range;
     const double nearfield_blind_sq = nearfield_blind_override * nearfield_blind_override;
 
+    // Far-field candidates collected here instead of pushed straight to pl_surf when
+    // far_field_sampling_enable is set, so they can be range-weighted-sampled down to a
+    // shared near+far budget after the loop (see header comment on
+    // far_field_sampling_target_total for why range, not point_filter_num decimation).
+    struct FarCandidate { PointType point; double range; };
+    std::vector<FarCandidate> far_candidates;
+    if (far_field_sampling_enable) far_candidates.reserve(plsize);
+
     uint valid_num = 0;
     for (uint32_t i = 1; i < plsize; ++i) {
         if (msg->points[i].line >= N_SCANS ||
@@ -148,8 +158,41 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
             continue;
         }
 
+        if (range_sq <= blind * blind) continue;
+
+        if (far_field_sampling_enable) {
+            far_candidates.push_back({point, std::sqrt(range_sq)});
+            continue;
+        }
+
         if (valid_num % point_filter_num != 0) continue;
-        if (range_sq > blind * blind) pl_surf.push_back(point);
+        pl_surf.push_back(point);
+    }
+
+    if (far_field_sampling_enable) {
+        const int far_budget = std::max(
+            far_field_sampling_target_total - static_cast<int>(pl_nearfield.size()), 0);
+        if (static_cast<int>(far_candidates.size()) <= far_budget) {
+            for (const auto &c : far_candidates) pl_surf.push_back(c.point);
+        } else if (far_budget > 0) {
+            // Weighted sampling without replacement (Efraimidis-Spirakis A-Res): weight
+            // w_i = 1/range_i favors closer points; key_i = u_i^(1/w_i) = u_i^range_i,
+            // keep the far_budget candidates with the largest key. A big distant flat
+            // surface (ceiling, far wall) still has many candidates, but each individual
+            // one competes at low expected key value against closer points, so it no
+            // longer dominates the budget just by virtue of subtending more solid angle.
+            thread_local std::mt19937 rng(std::random_device{}());
+            std::uniform_real_distribution<double> unif(1e-9, 1.0);
+            std::vector<double> keys(far_candidates.size());
+            for (size_t j = 0; j < far_candidates.size(); ++j) {
+                keys[j] = std::pow(unif(rng), far_candidates[j].range);
+            }
+            std::vector<size_t> idx(far_candidates.size());
+            for (size_t j = 0; j < idx.size(); ++j) idx[j] = j;
+            std::partial_sort(idx.begin(), idx.begin() + far_budget, idx.end(),
+                              [&keys](size_t a, size_t b) { return keys[a] > keys[b]; });
+            for (int j = 0; j < far_budget; ++j) pl_surf.push_back(far_candidates[idx[j]].point);
+        }
     }
 }
 

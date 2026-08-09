@@ -85,11 +85,26 @@
             publish_world: true
             publish_raw: true            # publish /nearfield/raw_body (undeskewed) for A/B comparison
 
+        far_field_sampling:
+            enable: false                # decimate far-field points AT CAPTURE TIME (before EKF
+                                         # processing, not just before publishing) so Jetson doesn't
+                                         # pay compute for points that get thrown away anyway.
+                                         # point_filter_num above stays in effect when this is off.
+            target_total: 5000          # near+far combined budget; far gets
+                                         # max(target_total - this_frame's_nearfield_count, 0), so
+                                         # total stays near this regardless of how much near-field
+                                         # varies frame to frame. Within that, far-field points are
+                                         # weighted-sampled favoring closer range -- large distant flat
+                                         # surfaces (ceiling, far walls) subtend more solid angle and
+                                         # so dominate a frame's points under uniform sampling; range
+                                         # weighting suppresses that without any height/attitude
+                                         # assumption (unlike the near-field z_half_height gate above).
+
         os_deskew:
             enable: false                # C2: fixed-lag RTS-smoothed near-field output
                                          # (/nearfield/refined_body, /nearfield/refined_world).
                                          # Pure add-on: never feeds back into kf_output/kf_input.
-            lag: 0.1                     # fixed-lag window L (s); output latency = this
+            lag: 0.05                    # fixed-lag window L (s); output latency = this
             node_hz: 1000.0              # smoother node feed rate (native EKF update rate is much higher)
             q_pos_accel: 4.0             # (m/s^2)^2, process noise for constant-velocity position model
             r_pos: 4e-4                  # m^2, measurement noise treating causal position as an observation
