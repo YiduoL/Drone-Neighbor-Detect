@@ -210,7 +210,12 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 			else
 			{
 				point_selected_surf[idx+j+1] = false;
-				if (esti_plane(pabcd, points_near, plane_thr)) //(planeValid)
+				bool plane_ok;
+				{
+					PROF_SCOPE("esti_plane");
+					plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+				}
+				if (plane_ok)
 				{
 					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
 
@@ -305,7 +310,12 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 			else
 			{
 				point_selected_surf[idx+j+1] = false;
-				if (esti_plane(pabcd, points_near, plane_thr)) //(planeValid)
+				bool plane_ok;
+				{
+					PROF_SCOPE("esti_plane");
+					plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+				}
+				if (plane_ok)
 				{
 					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
 

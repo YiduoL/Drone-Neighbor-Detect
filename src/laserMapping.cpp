@@ -1583,6 +1583,11 @@ int main(int argc, char **argv) {
                 PROF_SCOPE("map_incremental");
                 map_incremental();
             }
+            // predict: reuses the existing propag_time accumulator (reset per-frame at the
+            // top of the loop, summed at each kf_output/kf_input.predict() call site above)
+            // rather than wrapping all 9 call sites individually -- one sample per frame,
+            // in seconds already so convert to ms to match the other metrics here.
+            PROF_SAMPLE("predict", propag_time * 1000.0);
             PROF_MAYBE_REPORT();
 
             t5 = omp_get_wtime();
