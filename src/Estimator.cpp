@@ -1,5 +1,6 @@
 // #include <../include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp>
 #include "Estimator.h"
+#include <prof_timing.h>
 
 PointCloudXYZI::Ptr normvec(new PointCloudXYZI(100000, 1));
 std::vector<int> time_seq;
@@ -196,9 +197,12 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 		
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
-			
-			ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); //1.0); //, 3.0); // 2.236;
-			
+
+			{
+				PROF_SCOPE("nn_search");
+				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); //1.0); //, 3.0); // 2.236;
+			}
+
 			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5) // 5)
 			{
 				point_selected_surf[idx+j+1] = false;
@@ -209,7 +213,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 				if (esti_plane(pabcd, points_near, plane_thr)) //(planeValid)
 				{
 					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
-					
+
 					if (p_body.norm() > match_s * pd2 * pd2)
 					{
 						point_selected_surf[idx+j+1] = true;
@@ -219,11 +223,13 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 						normvec->points[j].intensity = pabcd(3);
 						effect_num_k ++;
 					}
-				}  
+				}
 			}
 		}
 	}
-	if (effect_num_k == 0) 
+	PROF_SAMPLE("dof_measurement", effect_num_k);
+	PROF_SAMPLE("group_size", time_seq[k]);
+	if (effect_num_k == 0)
 	{
 		ekfom_data.valid = false;
 		return;
@@ -237,7 +243,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 		if(point_selected_surf[idx+j+1])
 		{
 			V3D norm_vec(normvec->points[j].x, normvec->points[j].y, normvec->points[j].z);
-			
+
 			if (extrinsic_est_en)
 			{
 				V3D p_body = pbody_list[idx+j+1];
@@ -251,7 +257,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 				ekfom_data.h_x.block<1, 12>(m, 0) << norm_vec(0), norm_vec(1), norm_vec(2), VEC_FROM_ARRAY(A), VEC_FROM_ARRAY(B), VEC_FROM_ARRAY(C);
 			}
 			else
-			{   
+			{
 				M3D point_crossmat = crossmat_list[idx+j+1];
 				V3D C(s.rot.conjugate().normalized() * norm_vec);
 				V3D A(point_crossmat * C);
@@ -282,9 +288,12 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 		p_world << point_world_j.x, point_world_j.y, point_world_j.z;
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
-			
-			ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); 
-			
+
+			{
+				PROF_SCOPE("nn_search");
+				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236);
+			}
+
 			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
 			{
 				point_selected_surf[idx+j+1] = false;
@@ -295,7 +304,7 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 				if (esti_plane(pabcd, points_near, plane_thr)) //(planeValid)
 				{
 					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
-					
+
 					if (p_body.norm() > match_s * pd2 * pd2)
 					{
 						// point_selected_surf[i] = true;
@@ -306,11 +315,13 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 						normvec->points[j].intensity = pabcd(3);
 						effect_num_k ++;
 					}
-				}  
+				}
 			}
 		}
 	}
-	if (effect_num_k == 0) 
+	PROF_SAMPLE("dof_measurement", effect_num_k);
+	PROF_SAMPLE("group_size", time_seq[k]);
+	if (effect_num_k == 0)
 	{
 		ekfom_data.valid = false;
 		return;

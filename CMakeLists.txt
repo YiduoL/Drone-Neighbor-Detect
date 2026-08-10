@@ -17,6 +17,17 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Step-0 profiling instrumentation (include/prof_timing.h) -- off by default so a normal
+# build has zero trace of it (not even a runtime branch). Enable with
+# `colcon build --cmake-args -DPOINTLIO_PROFILE=ON` to get per-frame mean/p50/p95/p99
+# timing summaries printed every 200 frames for: ekf_update, nn_search, map_incremental,
+# deskew (see prof_timing.h and its call sites for exact scope boundaries).
+option(POINTLIO_PROFILE "Enable lightweight timing instrumentation (see include/prof_timing.h)" OFF)
+if(POINTLIO_PROFILE)
+  add_compile_definitions(POINTLIO_PROFILE)
+  message(STATUS "POINTLIO_PROFILE enabled -- timing instrumentation compiled in")
+endif()
+
 # Compiler settings for performance and threading
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 # -DNDEBUG strips eigen_assert (and standard assert()) -- previously missing here, so

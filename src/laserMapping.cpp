@@ -7,6 +7,7 @@
 #include <csignal>
 #include <Python.h>
 #include <so3_math.h>
+#include <prof_timing.h>
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Core>
 #include "IMU_Processing.hpp"
@@ -666,6 +667,7 @@ void publish_frame_body(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::
 // so they cannot pollute state estimation, and cost is one transform per point.
 void flush_nearfield_upto(double t_bound) {
     if (!p_pre->nearfield_enable) return;
+    PROF_SCOPE("deskew");
     auto &nf_pts = Measures.nearfield->points;
     while (nf_idx < (int) nf_pts.size()) {
         PointType &p_body = nf_pts[nf_idx];
@@ -1346,7 +1348,12 @@ int main(int argc, char **argv) {
                         idx += time_seq[k];
                         continue;
                     }
-                    if (!kf_output.update_iterated_dyn_share_modified()) {
+                    bool kf_output_ok;
+                    {
+                        PROF_SCOPE("ekf_update");
+                        kf_output_ok = kf_output.update_iterated_dyn_share_modified();
+                    }
+                    if (!kf_output_ok) {
                         idx = idx + time_seq[k];
                         continue;
                     }
@@ -1501,7 +1508,12 @@ int main(int argc, char **argv) {
                         idx += time_seq[k];
                         continue;
                     }
-                    if (!kf_input.update_iterated_dyn_share_modified()) {
+                    bool kf_input_ok;
+                    {
+                        PROF_SCOPE("ekf_update");
+                        kf_input_ok = kf_input.update_iterated_dyn_share_modified();
+                    }
+                    if (!kf_input_ok) {
                         idx = idx + time_seq[k];
                         continue;
                     }
@@ -1568,8 +1580,10 @@ int main(int argc, char **argv) {
             t3 = omp_get_wtime();
 
             if (feats_down_size > 4) {
+                PROF_SCOPE("map_incremental");
                 map_incremental();
             }
+            PROF_MAYBE_REPORT();
 
             t5 = omp_get_wtime();
             /******* Publish points *******/
