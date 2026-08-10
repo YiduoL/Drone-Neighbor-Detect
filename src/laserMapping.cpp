@@ -1069,47 +1069,52 @@ int main(int argc, char **argv) {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubNearfieldRefinedBody;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubNearfieldRefinedWorld;
 
+    // QoS depth for all publishers below: was 100000 (same class of bug as the IMU
+    // subscription above -- an unreasonably large KEEP_LAST/RELIABLE depth that exceeds
+    // Fast-RTPS's default max_samples resource limit under ROS2 Foxy, throwing
+    // rclcpp::exceptions::RCLError at create_publisher() and aborting the node). 50 is
+    // far more than any realistic subscriber lag needs at this fork's frame rates.
     if (!odom_only){
         pubLaserCloudFullRes = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/cloud_registered", 100000);
+                ("/cloud_registered", 50);
         pubLaserCloudFullRes_body = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/cloud_registered_body", 100000);
+                ("/cloud_registered_body", 50);
         pubLaserCloudEffect = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/cloud_effected", 100000);
+                ("/cloud_effected", 50);
         pubLaserCloudMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/Laser_map", 100000);
+                ("/Laser_map", 50);
         pubPath = nh->create_publisher<nav_msgs::msg::Path>
-                ("/path", 100000);
+                ("/path", 50);
     }
 
     if (p_pre->nearfield_enable) {
         pubNearfieldDeskewedBody = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/nearfield/deskewed_body", 100000);
+                ("/nearfield/deskewed_body", 50);
         if (nearfield_publish_world) {
             pubNearfieldDeskewedWorld = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                    ("/nearfield/deskewed_world", 100000);
+                    ("/nearfield/deskewed_world", 50);
         }
         if (nearfield_publish_raw) {
             pubNearfieldRawBody = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                    ("/nearfield/raw_body", 100000);
+                    ("/nearfield/raw_body", 50);
         }
     }
 
     if (os_deskew_enable) {
         pubNearfieldRefinedBody = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/nearfield/refined_body", 100000);
+                ("/nearfield/refined_body", 50);
         pubNearfieldRefinedWorld = nh->create_publisher<sensor_msgs::msg::PointCloud2>
-                ("/nearfield/refined_world", 100000);
+                ("/nearfield/refined_world", 50);
     }
 
     // Choose topic name depending on odom_only value
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped;
     if (odom_only){
         pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
-                ("/odom_corrected", 100000);
+                ("/odom_corrected", 50);
     } else {
         pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
-                ("/aft_mapped_to_init", 100000);
+                ("/aft_mapped_to_init", 50);
     }
 
     //auto plane_pub = nh->create_publisher<visualization_msgs::msg::Marker>
