@@ -46,44 +46,55 @@ OTHER_DRONE_THRESHOLD = 0.35
 
 
 def read_cloud_topic(bag_path, topic):
+    # Use each message's own header.stamp, not the bag's recorded receive time -- a bag
+    # recorded via a forced SIGKILL (see run_pointlio.sh) into an mcap with no message
+    # index can be read back out of true receive order (rosbag2 warns "attempted to read
+    # in receive timestamp order with no message index" in this case), which silently
+    # corrupts any time-based logic downstream. header.stamp is set by the publisher and
+    # is reliably monotonic; sorting by it here is a second safety net against that.
     r = rosbag2_py.SequentialReader()
     r.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
            rosbag2_py.ConverterOptions("", ""))
     r.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
     out = []
-    t0 = None
     while r.has_next():
-        _, data, t = r.read_next()
-        if t0 is None:
-            t0 = t
+        _, data, _ = r.read_next()
         msg = deserialize_message(data, PointCloud2)
+        hs = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         pts = np.array(list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)))
         if pts.size == 0:
             pts = np.zeros((0, 3), dtype=np.float32)
         else:
             pts = np.column_stack([pts["x"], pts["y"], pts["z"]]).astype(np.float32)
-        out.append(((t - t0) / 1e9, pts))
-    return out
+        out.append((hs, pts))
+    out.sort(key=lambda item: item[0])
+    t0 = out[0][0] if out else 0.0
+    return [(hs - t0, pts) for hs, pts in out]
 
 
 def read_pose_topic_with_time(bag_path, topic="/aft_mapped_to_init"):
+    # Sorted by header.stamp, not bag receive order -- see read_cloud_topic's comment
+    # elsewhere in this repo. Matters even more here: poses get matched to point clouds
+    # BY ARRAY INDEX, so an out-of-order read silently misaligns pose-to-cloud pairing
+    # rather than just shifting a display timestamp.
     r = rosbag2_py.SequentialReader()
     r.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id="mcap"),
            rosbag2_py.ConverterOptions("", ""))
     r.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
-    times, pos, poses7 = [], [], []
-    t0 = None
+    rows = []
     while r.has_next():
-        _, data, t = r.read_next()
-        if t0 is None:
-            t0 = t
+        _, data, _ = r.read_next()
         msg = deserialize_message(data, Odometry)
+        hs = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
-        times.append((t - t0) / 1e9)
-        pos.append([p.x, p.y, p.z])
-        poses7.append([p.x, p.y, p.z, q.w, q.x, q.y, q.z])
-    return np.array(times), np.array(pos), poses7
+        rows.append((hs, [p.x, p.y, p.z], [p.x, p.y, p.z, q.w, q.x, q.y, q.z]))
+    rows.sort(key=lambda item: item[0])
+    t0 = rows[0][0] if rows else 0.0
+    times = np.array([hs - t0 for hs, _, _ in rows])
+    pos = np.array([pos for _, pos, _ in rows])
+    poses7 = [pose7 for _, _, pose7 in rows]
+    return times, pos, poses7
 
 
 def kabsch_transform(src, dst):

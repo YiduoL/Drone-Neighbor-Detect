@@ -46,39 +46,51 @@ FRAME_BUDGET_MS = 90.0  # ~1/10.5 Hz Mid360 frame rate we've been seeing
 
 
 def read_cloud_topic(bag_path, topic, storage_id="mcap"):
+    # Use each message's own header.stamp, not the bag's recorded receive time -- a bag
+    # recorded via a forced SIGKILL (see run_pointlio.sh) into an mcap with no message
+    # index can be read back out of true receive order (rosbag2 warns "attempted to read
+    # in receive timestamp order with no message index" in this case), which silently
+    # corrupts any time-based logic downstream. header.stamp is set by the publisher and
+    # is reliably monotonic; sorting by it here is a second safety net against that.
     r = rosbag2_py.SequentialReader()
     r.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id=storage_id),
            rosbag2_py.ConverterOptions("", ""))
     r.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
     out = []
-    t0 = None
     while r.has_next():
-        _, data, t = r.read_next()
-        if t0 is None:
-            t0 = t
+        _, data, _ = r.read_next()
         msg = deserialize_message(data, PointCloud2)
+        hs = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         pts = np.array(list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)))
         if pts.size == 0:
             pts = np.zeros((0, 3), dtype=np.float32)
         else:
             pts = np.column_stack([pts["x"], pts["y"], pts["z"]]).astype(np.float32)
-        out.append(((t - t0) / 1e9, pts))
-    return out
+        out.append((hs, pts))
+    out.sort(key=lambda item: item[0])
+    t0 = out[0][0] if out else 0.0
+    return [(hs - t0, pts) for hs, pts in out]
 
 
 def read_pose_topic(bag_path, topic, storage_id="mcap"):
+    # Sorted by header.stamp, not bag receive order -- see read_cloud_topic's comment.
+    # Matters even more here: poses get matched to point clouds BY ARRAY INDEX elsewhere
+    # in this codebase, so an out-of-order read here silently misaligns pose-to-cloud
+    # pairing rather than just shifting a display timestamp.
     r = rosbag2_py.SequentialReader()
     r.open(rosbag2_py.StorageOptions(uri=bag_path, storage_id=storage_id),
            rosbag2_py.ConverterOptions("", ""))
     r.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
     out = []
     while r.has_next():
-        _, data, t = r.read_next()
+        _, data, _ = r.read_next()
         msg = deserialize_message(data, Odometry)
+        hs = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
-        out.append([p.x, p.y, p.z, q.w, q.x, q.y, q.z])
-    return out
+        out.append((hs, [p.x, p.y, p.z, q.w, q.x, q.y, q.z]))
+    out.sort(key=lambda item: item[0])
+    return [pose for _, pose in out]
 
 
 def load_frames(bag_path, near_topic, far_topic, odom_topic, max_range, max_seconds):
