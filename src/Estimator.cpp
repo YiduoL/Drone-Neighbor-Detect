@@ -235,7 +235,11 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 		return;
 	}
 	ekfom_data.M_Noise = laser_point_cov;
-	ekfom_data.h_x = Eigen::MatrixXd::Zero(effect_num_k, 12);
+	// .resize(), not ::Zero(): every row [0, effect_num_k) is unconditionally
+	// overwritten by the block<1,12>(m,0) << ... assignment in the loop below (m counts
+	// up to exactly effect_num_k, by construction), so zero-filling first is wasted work
+	// on every EKF update call.
+	ekfom_data.h_x.resize(effect_num_k, 12);
 	ekfom_data.z.resize(effect_num_k);
 	int m = 0;
 	for (int j = 0; j < time_seq[k]; j++)
@@ -327,7 +331,11 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 		return;
 	}
 	ekfom_data.M_Noise = laser_point_cov;
-	ekfom_data.h_x = Eigen::MatrixXd::Zero(effect_num_k, 12);
+	// .resize(), not ::Zero(): every row [0, effect_num_k) is unconditionally
+	// overwritten by the block<1,12>(m,0) << ... assignment in the loop below (m counts
+	// up to exactly effect_num_k, by construction), so zero-filling first is wasted work
+	// on every EKF update call.
+	ekfom_data.h_x.resize(effect_num_k, 12);
 	ekfom_data.z.resize(effect_num_k);
 	int m = 0;
 	for (int j = 0; j < time_seq[k]; j++)
