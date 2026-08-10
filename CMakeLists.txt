@@ -9,9 +9,36 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions" )
 
+# Default to Release if the caller (e.g. colcon) didn't specify a build type. -O3 below
+# is applied unconditionally regardless of this, but CMAKE_BUILD_TYPE affects other
+# things (e.g. some find_package config choices), so pin it explicitly rather than
+# silently building with CMake's default empty build type.
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 # Compiler settings for performance and threading
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
-add_compile_options(-O3 -pthread -fexceptions)
+# -DNDEBUG strips eigen_assert (and standard assert()) -- previously missing here, so
+# every per-point Eigen op in the hot loop was paying for debug bounds/shape checks in
+# what was otherwise an -O3 build. This is a pure compile-flag change, not a behavior
+# change: any assert that would fire is a bug, not something relied upon.
+add_compile_options(-O3 -DNDEBUG -pthread -fexceptions)
+
+# On aarch64 (Jetson's Cortex-A78AE), target the specific core instead of the generic
+# ARM baseline ISA the compiler defaults to. Probed via check_cxx_compiler_flag rather
+# than assumed, since this must still build on non-Orin aarch64 / older GCC. Deliberately
+# NOT -march=native: the binary may run on a different machine than it was built on.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64)|(arm64)")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-mcpu=cortex-a78ae" COMPILER_SUPPORTS_CORTEX_A78AE)
+  if(COMPILER_SUPPORTS_CORTEX_A78AE)
+    add_compile_options(-mcpu=cortex-a78ae)
+    message(STATUS "aarch64: targeting -mcpu=cortex-a78ae")
+  else()
+    message(STATUS "aarch64: -mcpu=cortex-a78ae not supported by this compiler, staying with plain -O3 -DNDEBUG")
+  endif()
+endif()
 
 # Processor count and definitions
 message(STATUS "Current CPU architecture: ${CMAKE_SYSTEM_PROCESSOR}")
