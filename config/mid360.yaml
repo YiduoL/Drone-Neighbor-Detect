@@ -48,6 +48,15 @@
         odometry:
             publish_odometry_without_downsample: false
 
+        runtime_pos_log_enable: false    # print per-frame timing breakdown to stdout -- CAUTION:
+                                         # segfaults quickly when enabled (crashed within ~1s in
+                                         # testing); this legacy debug path also unconditionally
+                                         # tries to open Log/mat_out.txt & Log/imu_pbp.txt under
+                                         # ROOT_DIR (see laserMapping.cpp DEBUG_FILE_DIR), which
+                                         # doesn't exist on this machine ("~~~~... doesn't exist"
+                                         # startup message) -- root cause of the crash not yet
+                                         # diagnosed. Needs a fix before this is usable.
+
         publish:
             path_en: true                 # false: close the path output
             scan_publish_en: true         # false: close all the point cloud output
@@ -64,7 +73,7 @@
             # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
 
         nearfield:
-            enable: false
+            enable: true
             near_range: 3.5              # near-field CYLINDER horizontal radius (m), zero-downsample within it
             z_half_height: 1.0           # near-field cylinder vertical half-height (m); membership is
                                          # horiz_range<=near_range AND |z|<=z_half_height, NOT a sphere --
@@ -86,7 +95,7 @@
             publish_raw: true            # publish /nearfield/raw_body (undeskewed) for A/B comparison
 
         far_field_sampling:
-            enable: false                # decimate far-field points AT CAPTURE TIME (before EKF
+            enable: true                # decimate far-field points AT CAPTURE TIME (before EKF
                                          # processing, not just before publishing) so Jetson doesn't
                                          # pay compute for points that get thrown away anyway.
                                          # point_filter_num above stays in effect when this is off.
@@ -99,6 +108,18 @@
                                          # so dominate a frame's points under uniform sampling; range
                                          # weighting suppresses that without any height/attitude
                                          # assumption (unlike the near-field z_half_height gate above).
+            warmup_seconds: 5.0         # full-density far-field (sampling off) for this many seconds
+                                         # after the first frame, THEN start sampling. Measured: with
+                                         # sampling on from frame 0, the causal background map's
+                                         # cold-start recall at a fixed test point dropped from 0.99 to
+                                         # 0.35 (fewer far-field rays/frame = slower to build "confirmed
+                                         # free space" evidence) -- a short full-density warmup lets it
+                                         # catch up before switching to the lighter compute budget.
+                                         # Only helps at startup: re-entering unexplored space mid-flight
+                                         # re-triggers the same slow warm-up regardless of this timer
+                                         # (cold start is spatially local, not global -- see
+                                         # PIPELINE.md), since this has no visibility into the causal
+                                         # detector's own map state (a separate downstream process).
 
         os_deskew:
             enable: false                # C2: fixed-lag RTS-smoothed near-field output

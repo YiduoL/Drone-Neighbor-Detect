@@ -30,7 +30,9 @@ def generate_launch_description():
             # space_down_sample / filter_size_surf entries.
             'filter_size_map': 0.5,  # Options: 0.5, 0.3, 0.15, 0.1
             'cube_side_length': 1000.0,  # Option: 1000
-            'runtime_pos_log_enable': False,  # Option: True
+            # NOTE: runtime_pos_log_enable used to be hardcoded False here too, for the
+            # same reason as point_filter_num/space_down_sample above -- removed so
+            # mid360.yaml's own runtime_pos_log_enable is the one source of truth.
         }
     ]
 

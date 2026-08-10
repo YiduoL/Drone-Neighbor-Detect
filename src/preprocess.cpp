@@ -102,13 +102,22 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
     const double near_range_sq = nearfield_near_range * nearfield_near_range;
     const double nearfield_blind_sq = nearfield_blind_override * nearfield_blind_override;
 
+    // Full density for the first far_field_sampling_warmup_seconds, then start sampling --
+    // see header comment on far_field_sampling_warmup_seconds for why.
+    if (far_field_sampling_start_time < 0.0) {
+        far_field_sampling_start_time = rclcpp::Time(msg->header.stamp).seconds();
+    }
+    const double elapsed_since_start = rclcpp::Time(msg->header.stamp).seconds() - far_field_sampling_start_time;
+    const bool far_sampling_active = far_field_sampling_enable &&
+                                     elapsed_since_start >= far_field_sampling_warmup_seconds;
+
     // Far-field candidates collected here instead of pushed straight to pl_surf when
-    // far_field_sampling_enable is set, so they can be range-weighted-sampled down to a
+    // far_sampling_active is set, so they can be range-weighted-sampled down to a
     // shared near+far budget after the loop (see header comment on
     // far_field_sampling_target_total for why range, not point_filter_num decimation).
     struct FarCandidate { PointType point; double range; };
     std::vector<FarCandidate> far_candidates;
-    if (far_field_sampling_enable) far_candidates.reserve(plsize);
+    if (far_sampling_active) far_candidates.reserve(plsize);
 
     uint valid_num = 0;
     for (uint32_t i = 1; i < plsize; ++i) {
@@ -160,7 +169,7 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
 
         if (range_sq <= blind * blind) continue;
 
-        if (far_field_sampling_enable) {
+        if (far_sampling_active) {
             far_candidates.push_back({point, std::sqrt(range_sq)});
             continue;
         }
@@ -169,7 +178,7 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
         pl_surf.push_back(point);
     }
 
-    if (far_field_sampling_enable) {
+    if (far_sampling_active) {
         const int far_budget = std::max(
             far_field_sampling_target_total - static_cast<int>(pl_nearfield.size()), 0);
         if (static_cast<int>(far_candidates.size()) <= far_budget) {

@@ -110,6 +110,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<bool>("nearfield.publish_raw", true);
     nh->declare_parameter<bool>("far_field_sampling.enable", false);
     nh->declare_parameter<int>("far_field_sampling.target_total", 5000);
+    nh->declare_parameter<double>("far_field_sampling.warmup_seconds", 0.0);
     nh->declare_parameter<bool>("os_deskew.enable", false);
     nh->declare_parameter<double>("os_deskew.lag", 0.1);
     nh->declare_parameter<double>("os_deskew.node_hz", 1000.0);
@@ -188,6 +189,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("nearfield.publish_raw", nearfield_publish_raw);
     nh->get_parameter("far_field_sampling.enable", p_pre->far_field_sampling_enable);
     nh->get_parameter("far_field_sampling.target_total", p_pre->far_field_sampling_target_total);
+    nh->get_parameter("far_field_sampling.warmup_seconds", p_pre->far_field_sampling_warmup_seconds);
     nh->get_parameter("os_deskew.enable", os_deskew_enable);
     nh->get_parameter("os_deskew.lag", os_deskew_lag);
     nh->get_parameter("os_deskew.node_hz", os_deskew_node_hz);

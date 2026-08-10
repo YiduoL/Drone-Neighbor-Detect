@@ -187,6 +187,16 @@ public:
     // during non-level flight the way the near-field cylinder's body-frame z gate can).
     bool far_field_sampling_enable = false;
     int far_field_sampling_target_total = 5000;
+    // Full-density far-field for this many seconds after the first frame, THEN switch to
+    // sampling -- lets the causal background map warm up (build "confirmed free space"
+    // evidence) at full ray count first, since fewer far-field rays/frame directly slows
+    // that warm-up (measured: recall 0.99 -> 0.35 at the same cold-start point once
+    // sampling was on from frame 0). Only helps at startup; re-entering unexplored space
+    // mid-flight re-triggers the same slow warm-up regardless of this timer (cold start
+    // is spatially local, not global -- see PIPELINE.md), which this can't address since
+    // preprocess.cpp has no visibility into the detector's own map state.
+    double far_field_sampling_warmup_seconds = 0.0;
+    double far_field_sampling_start_time = -1.0;  // set on first avia_handler() call
 
 
 private:
