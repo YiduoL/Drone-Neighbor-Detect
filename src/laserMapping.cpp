@@ -1050,7 +1050,13 @@ int main(int argc, char **argv) {
         sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(
                 lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
     }
-    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 200000, imu_cbk);
+    // Queue depth: was 200000 (a KEEP_LAST depth this large exceeds Fast-RTPS's default
+    // max_samples resource limit on some RMW/distro combinations, e.g. ROS2 Foxy on
+    // Jetson -- "depth must be <= max_samples" at subscription creation). Reliable
+    // delivery (not SensorDataQoS/best-effort) is kept since IMU samples must not be
+    // dropped for correct state propagation; 2000 is far more than one frame's worth of
+    // IMU backlog ever needs (10s at 200Hz) while staying well under typical RMW limits.
+    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 2000, imu_cbk);
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes_body;
