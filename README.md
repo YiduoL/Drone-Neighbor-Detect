@@ -25,7 +25,10 @@ supporting visualizations, viewable directly in a browser.
   smoother output, at the cost of a fixed delay. Read-only with respect to the
   estimator; never feeds back into it.
 
-Both are disabled by default in `config/mid360.yaml`; with both off, this fork behaves
+C1 is enabled by default in `config/mid360.yaml` (along with far-field range-weighted
+sampling, to keep resource-constrained platforms like a Jetson from paying compute for
+points that get decimated anyway); C2 is off by default (not needed for the detection
+pipeline, and skipping it avoids its added latency). With both off, this fork behaves
 identically to upstream Point-LIO.
 
 ## Build
