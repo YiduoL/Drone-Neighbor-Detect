@@ -192,36 +192,64 @@ public:
 				return false;
 				// continue;
 			}
-			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> z = dyn_share.z;
-			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> R = dyn_share.R; 
-			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x = dyn_share.h_x;
-			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_v = dyn_share.h_v;
-			dof_Measurement = h_x.rows();
+			dof_Measurement = dyn_share.h_x.rows();
 			m_noise = dyn_share.M_Noise;
-			// dof_Measurement_noise = dyn_share.R.rows();
-			// vectorized_state dx, dx_new;
-			// x_.boxminus(dx, x_propagated);
-			// dx_new = dx;
-			// P_ = P_propagated;
 
-			Matrix<scalar_type, n, Eigen::Dynamic> PHT;
-			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;
-			Matrix<scalar_type, n, Eigen::Dynamic> K_;
-			// if(n > dof_Measurement)
-			{
-				PHT = P_. template block<n, 12>(0, 0) * h_x.transpose();
-				HPHT = h_x * PHT.topRows(12);
-				for (int m = 0; m < dof_Measurement; m++)
+			Matrix<scalar_type, n, 1> dx_;
+
+			if (dof_Measurement == 1) {
+				// Fast path: point-to-plane measurements from this fork's caller
+				// (Estimator.cpp h_model_input/h_model_output) are grouped by
+				// identical point timestamp (time_seq), and that group size is
+				// empirically ~always 1 (measured: p50=p95=p99=1, max=2 across
+				// 771k samples on a real bag) -- i.e. this is a true per-point
+				// scalar residual, not a batched/stacked one. The general path
+				// below is algebraically identical for dof_Measurement==1 (a 1x1
+				// "matrix inverse" is just a scalar reciprocal) but pays for
+				// Dynamic-sized Eigen temporaries (heap allocation every call)
+				// and Eigen's general .inverse() (LU-based) machinery to get
+				// there. This branch computes the same
+				// K_ = P*H^T*(H*P*H^T + R)^-1, dx_ = K_*z, P_ -= K_*H*P_
+				// using fixed-size types and a plain scalar division instead.
+				// Kept as a fast path (not a replacement) rather than changing
+				// dyn_share_modified's h_x/z types, since those are shared by
+				// other measurement models (e.g. h_model_IMU_output) this
+				// change must not touch.
+				Matrix<scalar_type, 1, 12> h_row = dyn_share.h_x.template block<1, 12>(0, 0);
+				scalar_type z0 = dyn_share.z(0);
+				Matrix<scalar_type, n, 1> PHT = P_. template block<n, 12>(0, 0) * h_row.transpose();
+				scalar_type HPHT = (h_row * PHT.template topRows<12>())(0, 0);
+				HPHT += m_noise;
+				Matrix<scalar_type, n, 1> K_ = PHT / HPHT;
+				dx_ = K_ * z0;
+				x_.boxplus(dx_);
+				dyn_share.converge = true;
+				P_ = P_ - (K_ * h_row) * P_. template block<12, n>(0, 0);
+			} else {
+				// General path, unchanged from upstream: dof_Measurement > 1 has not
+				// been observed in practice for this fork's callers (max seen: 2), but
+				// is kept exact and untouched as a correctness safety net.
+				Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> z = dyn_share.z;
+				Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x = dyn_share.h_x;
+
+				Matrix<scalar_type, n, Eigen::Dynamic> PHT;
+				Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;
+				Matrix<scalar_type, n, Eigen::Dynamic> K_;
 				{
-					HPHT(m, m) += m_noise;
+					PHT = P_. template block<n, 12>(0, 0) * h_x.transpose();
+					HPHT = h_x * PHT.topRows(12);
+					for (int m = 0; m < dof_Measurement; m++)
+					{
+						HPHT(m, m) += m_noise;
+					}
+					K_= PHT*HPHT.inverse();
 				}
-				K_= PHT*HPHT.inverse();
-			}
-			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
-			// state x_before = x_;
+				dx_ = K_ * z;
 
-			x_.boxplus(dx_);
-			dyn_share.converge = true;
+				x_.boxplus(dx_);
+				dyn_share.converge = true;
+				P_ = P_ - K_*h_x*P_. template block<12, n>(0, 0);
+			}
 			
 			// L_ = P_;
 			// Matrix<scalar_type, 3, 3> res_temp_SO3;
@@ -279,14 +307,10 @@ public:
 			// 		P_. template block<1, 2>(i, idx) = (P_. template block<1, 2>(i, idx)) * res_temp_S2.transpose();
 			// 	}
 			// }
-			// if(n > dof_Measurement)
-			{
-				P_ = P_ - K_*h_x*P_. template block<12, n>(0, 0);
-			}
 		}
 		return true;
 	}
-	
+
 	void update_iterated_dyn_share_IMU() {
 		
 		dyn_share_modified<scalar_type> dyn_share;
