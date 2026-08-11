@@ -1586,6 +1586,16 @@ int main(int argc, char **argv) {
             if (!publish_odometry_without_downsample) {
                 publish_odometry(pubOdomAftMapped, tf_broadcaster);
             }
+            // Frame-level end-to-end latency: t0 (set at sync_packages() success, i.e. a
+            // full LiDAR frame is in hand) to here (odometry published for this frame --
+            // covers the publish_odometry_without_downsample=false branch above, which is
+            // this fork's current default; if that flag flips to true the "real" egress
+            // moves inside the k-loop instead and this sample would need to move with it).
+            // This is the trusted, directly-measured per-frame number -- do not
+            // reconstruct it from summed per-op means elsewhere, they miss fixed overhead
+            // and don't capture run-to-run variance the same way a single wall-clock span
+            // does.
+            PROF_SAMPLE("frame_e2e", (omp_get_wtime() - t0) * 1000.0);
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
