@@ -108,18 +108,24 @@
                                          # so dominate a frame's points under uniform sampling; range
                                          # weighting suppresses that without any height/attitude
                                          # assumption (unlike the near-field z_half_height gate above).
-            warmup_seconds: 5.0         # full-density far-field (sampling off) for this many seconds
-                                         # after the first frame, THEN start sampling. Measured: with
-                                         # sampling on from frame 0, the causal background map's
-                                         # cold-start recall at a fixed test point dropped from 0.99 to
-                                         # 0.35 (fewer far-field rays/frame = slower to build "confirmed
-                                         # free space" evidence) -- a short full-density warmup lets it
-                                         # catch up before switching to the lighter compute budget.
-                                         # Only helps at startup: re-entering unexplored space mid-flight
-                                         # re-triggers the same slow warm-up regardless of this timer
-                                         # (cold start is spatially local, not global -- see
-                                         # PIPELINE.md), since this has no visibility into the causal
-                                         # detector's own map state (a separate downstream process).
+            warmup_seconds: 0.0         # DELIBERATELY disabled (was 5.0) -- sampling is now active
+                                         # from frame 0, so far-field density is target_total (5000)
+                                         # throughout, not full density for the first 5s. This is a
+                                         # known, accepted regression, not an oversight: the full-density
+                                         # warmup was added specifically because sampling from frame 0
+                                         # dropped the causal detector's cold-start recall at a fixed
+                                         # test point from 0.99 to 0.35 (fewer far-field rays/frame ->
+                                         # slower to build "confirmed free space" evidence). It was
+                                         # reverted because the warmup window's own full-density cost
+                                         # was found to make Point-LIO fall behind real-time on the
+                                         # Jetson target (frame drops during the warmup transient,
+                                         # confirmed via --rate 1.0 real-time bag playback vs
+                                         # --start-offset skipping past warmup). Runtime-safety was
+                                         # chosen over cold-start recall for this config. If recall
+                                         # matters more in a future revision, re-enabling this (or a
+                                         # lighter, non-zero-density warmup instead of full-raw) is the
+                                         # fix -- see PIPELINE.md and the causal DUFOMap cold-start
+                                         # discussion for the underlying mechanism.
 
         os_deskew:
             enable: false                # C2: fixed-lag RTS-smoothed near-field output
