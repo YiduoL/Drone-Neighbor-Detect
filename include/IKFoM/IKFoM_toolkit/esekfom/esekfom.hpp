@@ -217,14 +217,23 @@ public:
 				// change must not touch.
 				Matrix<scalar_type, 1, 12> h_row = dyn_share.h_x.template block<1, 12>(0, 0);
 				scalar_type z0 = dyn_share.z(0);
-				Matrix<scalar_type, n, 1> PHT = P_. template block<n, 12>(0, 0) * h_row.transpose();
+				Matrix<scalar_type, n, 1> PHT;
+				PHT.noalias() = P_. template block<n, 12>(0, 0) * h_row.transpose();
 				scalar_type HPHT = (h_row * PHT.template topRows<12>())(0, 0);
 				HPHT += m_noise;
 				Matrix<scalar_type, n, 1> K_ = PHT / HPHT;
 				dx_ = K_ * z0;
 				x_.boxplus(dx_);
 				dyn_share.converge = true;
-				P_ = P_ - (K_ * h_row) * P_. template block<12, n>(0, 0);
+				// P_ -= (K_*h_row) * P_.block<12,n>(0,0) reads P_ on the right (the block)
+				// while writing all of P_ on the left -- genuine self-aliasing, not safe to
+				// mark .noalias() directly (that would tell Eigen to skip the very check
+				// that protects against a read/write race here). Take an explicit copy of
+				// the block actually needed *before* the in-place update starts, which
+				// removes the aliasing for real (P_top no longer refers to P_ at all) --
+				// only then is .noalias() on the final subtraction provably safe.
+				Matrix<scalar_type, 12, n> P_top = P_. template block<12, n>(0, 0);
+				P_.noalias() -= (K_ * h_row) * P_top;
 			} else {
 				// General path, unchanged from upstream: dof_Measurement > 1 has not
 				// been observed in practice for this fork's callers (max seen: 2), but
