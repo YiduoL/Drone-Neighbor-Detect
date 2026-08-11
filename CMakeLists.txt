@@ -36,6 +36,26 @@ add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 # change: any assert that would fire is a bug, not something relied upon.
 add_compile_options(-O3 -DNDEBUG -pthread -fexceptions)
 
+# Link-time optimization: cross-translation-unit inlining helps a hot loop that's dense
+# with small function calls across src/Estimator.cpp, src/laserMapping.cpp, and the
+# header-only IKFoM/Eigen code they call into (per-point Jacobian/residual/manifold
+# ops that would otherwise stop at each .cpp's own optimization boundary). Uses CMake's
+# own IPO/LTO support (not a raw -flto compile flag) so it's applied consistently to
+# both the compile and link steps across compilers.
+if(POLICY CMP0069)
+  cmake_policy(SET CMP0069 NEW) # honor CMAKE_INTERPROCEDURAL_OPTIMIZATION (needed since
+                                 # this file pins cmake_minimum_required to 3.5, older
+                                 # than CMP0069's 3.9 default-NEW version)
+endif()
+include(CheckIPOSupported)
+check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_SUPPORT_ERROR)
+if(IPO_SUPPORTED)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+  message(STATUS "LTO/IPO enabled")
+else()
+  message(STATUS "LTO/IPO not supported by this toolchain (${IPO_SUPPORT_ERROR}), skipping")
+endif()
+
 # On aarch64 (Jetson's Cortex-A78AE), target the specific core instead of the generic
 # ARM baseline ISA the compiler defaults to. Probed via check_cxx_compiler_flag rather
 # than assumed, since this must still build on non-Orin aarch64 / older GCC. Deliberately
