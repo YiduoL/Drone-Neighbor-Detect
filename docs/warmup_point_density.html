@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>far_field_sampling warmup: points/frame over time</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --surface-2:      #f0efec;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #85837c;
+    --grid:           #e3e2dd;
+    --series-warmup:  #eb6834;
+    --series-steady:  #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --surface-2:      #232322;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #8f8e86;
+      --grid:           #333331;
+      --series-warmup:  #d95926;
+      --series-steady:  #3987e5;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --surface-2:      #232322;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8f8e86;
+    --grid:           #333331;
+    --series-warmup:  #d95926;
+    --series-steady:  #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root {
+    background: var(--surface-1);
+    color: var(--text-primary);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 28px 32px 40px;
+    max-width: 920px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.note { color: var(--text-secondary); font-size: 13px; line-height: 1.5; max-width: 760px; }
+  p.note code { background: var(--surface-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; margin: 14px 0 6px; }
+  .toolbar button {
+    font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 5px;
+    border: 1px solid var(--grid); background: var(--surface-2); color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .toolbar button[aria-pressed="true"] { color: var(--text-primary); border-color: var(--text-secondary); }
+
+  .legend { display: flex; gap: 18px; margin: 4px 0 12px; font-size: 12.5px; color: var(--text-secondary); }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+  svg { display: block; overflow: visible; font-family: inherit; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axis-text { fill: var(--text-muted); font-size: 11px; }
+  .line-warmup { fill: none; stroke: var(--series-warmup); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .line-steady { fill: none; stroke: var(--series-steady); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .boundary-line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .boundary-label { fill: var(--text-secondary); font-size: 11px; }
+
+  .crosshair { stroke: var(--text-muted); stroke-width: 1; pointer-events: none; opacity: 0; }
+  .hover-dot { pointer-events: none; opacity: 0; }
+  .hover-dot circle:first-child { fill: var(--surface-1); }
+
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity 0.08s;
+    background: var(--surface-2); border: 1px solid var(--grid); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--text-secondary); white-space: nowrap;
+  }
+  .tooltip .t-value { color: var(--text-primary); font-weight: 600; font-size: 13px; }
+  .tooltip .t-key { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+
+  .hit-layer { fill: transparent; cursor: crosshair; }
+
+  table.data-table { border-collapse: collapse; font-size: 12px; margin-top: 10px; display: none; }
+  table.data-table.visible { display: table; }
+  table.data-table th, table.data-table td {
+    text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); color: var(--text-secondary);
+  }
+  table.data-table th { color: var(--text-muted); font-weight: 600; }
+  .table-wrap { max-height: 300px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+
+<h1>far_field_sampling warmup: far-field points published per frame</h1>
+<p class="note">
+  <code>/cloud_registered</code> (far-field only -- near-field bypasses this entirely, see
+  <a href="https://github.com/YiduoL/Drone-Neighbor-Detect/blob/main/PIPELINE.md">PIPELINE.md</a>),
+  measured on a real 37s Mid360 recording with <code>far_field_sampling.warmup_seconds: 5.0</code>,
+  <code>target_total: 5000</code>. First ~15s shown -- the transition is the whole story;
+  the remaining ~18s stays flat at steady-state density.
+</p>
+
+<div class="toolbar">
+  <button id="btn-chart" aria-pressed="true">Chart</button>
+  <button id="btn-table" aria-pressed="false">Table</button>
+</div>
+
+<div class="legend">
+  <span class="key"><span class="swatch" style="background:var(--series-warmup)"></span>warmup (full density, t &lt; 4.7s)</span>
+  <span class="key"><span class="swatch" style="background:var(--series-steady)"></span>steady state (sampled, t &ge; 4.7s)</span>
+</div>
+
+<div id="chart-wrap" style="position:relative;">
+  <svg id="chart" width="860" height="360" viewBox="0 0 860 360" role="img"
+       aria-label="Points per frame drops from about 13800 to about 900 at the 4.7 second warmup boundary">
+  </svg>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<div class="table-wrap">
+  <table class="data-table" id="data-table">
+    <thead><tr><th>t (s)</th><th>points/frame</th><th>phase</th></tr></thead>
+    <tbody id="table-body"></tbody>
+  </table>
+</div>
+
+</div>
+
+<script>
+const DATA = [[0.0, 13537], [0.1, 13991], [0.2, 13755], [0.3, 13835], [0.4, 13653], [0.5, 14002], [0.6, 13636], [0.7, 13786], [0.8, 13899], [0.902, 13527], [1.0, 13992], [1.1, 13805], [1.2, 13679], [1.3, 13668], [1.4, 13859], [1.5, 13581], [1.6, 13743], [1.7, 13797], [1.8, 13586], [1.898, 13742], [1.999, 13751], [2.098, 13656], [2.2, 13717], [2.297, 13713], [2.4, 13710], [2.497, 13723], [2.6, 13707], [2.698, 13559], [2.8, 13695], [2.898, 13751], [3.0, 13676], [3.099, 13746], [3.2, 13779], [3.3, 13643], [3.4, 13524], [3.5, 13948], [3.6, 13419], [3.7, 13989], [3.8, 13694], [3.9, 13882], [4.0, 13848], [4.1, 13950], [4.2, 13771], [4.3, 13891], [4.4, 13980], [4.5, 13797], [4.6, 13972], [4.7, 756], [4.8, 670], [4.9, 605], [4.999, 801], [5.1, 565], [5.2, 802], [5.3, 717], [5.399, 685], [5.497, 821], [5.601, 737], [5.7, 544], [5.8, 814], [5.9, 755], [6.0, 677], [6.101, 678], [6.2, 901], [6.301, 593], [6.4, 773], [6.499, 796], [6.6, 681], [6.7, 770], [6.801, 796], [6.901, 741], [7.0, 657], [7.101, 877], [7.2, 642], [7.301, 755], [7.401, 769], [7.5, 780], [7.601, 650], [7.701, 894], [7.801, 739], [7.9, 700], [8.0, 879], [8.1, 794], [8.2, 699], [8.3, 794], [8.4, 791], [8.5, 676], [8.6, 862], [8.7, 821], [8.8, 684], [8.9, 841], [8.999, 780], [9.1, 675], [9.201, 883], [9.3, 866], [9.4, 716], [9.5, 984], [9.6, 902], [9.7, 770], [9.8, 967], [9.9, 891], [10.0, 805], [10.1, 926], [10.201, 874], [10.3, 822], [10.4, 925], [10.5, 891], [10.601, 765], [10.7, 859], [10.8, 811], [10.9, 630], [11.0, 784], [11.1, 818], [11.2, 669], [11.3, 821], [11.401, 846], [11.5, 680], [11.6, 830], [11.7, 881], [11.8, 707], [11.9, 773], [12.0, 955], [12.099, 791], [12.2, 766], [12.3, 988], [12.401, 789], [12.5, 755], [12.6, 967], [12.701, 851], [12.8, 808], [12.9, 995], [13.0, 855], [13.1, 787], [13.2, 972], [13.3, 839], [13.4, 817], [13.5, 976], [13.6, 810], [13.7, 752], [13.8, 970], [13.9, 806], [14.0, 720], [14.1, 973], [14.201, 797], [14.3, 764], [14.4, 954], [14.5, 745], [14.6, 738], [14.7, 901], [14.8, 803], [14.9, 752], [15.0, 923]];
+const BOUNDARY_T = 4.7;
+
+const root = document.getElementById('root');
+const svg = document.getElementById('chart');
+const W = 860, H = 360;
+const M = { top: 16, right: 16, bottom: 34, left: 56 };
+const plotW = W - M.left - M.right;
+const plotH = H - M.top - M.bottom;
+
+const tMax = Math.max(...DATA.map(d => d[0]));
+const nMax = Math.max(...DATA.map(d => d[1]));
+const yTop = Math.ceil(nMax / 2000) * 2000;
+
+function x(t) { return M.left + (t / tMax) * plotW; }
+function y(n) { return M.top + plotH - (n / yTop) * plotH; }
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+// gridlines + y-axis labels (clean steps)
+const yStep = yTop / 4;
+for (let i = 0; i <= 4; i++) {
+  const n = i * yStep;
+  const gy = y(n);
+  svg.appendChild(svgEl('line', { class: 'gridline', x1: M.left, x2: W - M.right, y1: gy, y2: gy }));
+  const label = svgEl('text', { class: 'axis-text', x: M.left - 8, y: gy + 4, 'text-anchor': 'end' });
+  label.textContent = n.toLocaleString();
+  svg.appendChild(label);
+}
+
+// x-axis labels
+for (let t = 0; t <= tMax; t += 3) {
+  const gx = x(t);
+  const label = svgEl('text', { class: 'axis-text', x: gx, y: H - M.bottom + 18, 'text-anchor': 'middle' });
+  label.textContent = t + 's';
+  svg.appendChild(label);
+}
+
+// boundary marker
+const bx = x(BOUNDARY_T);
+svg.appendChild(svgEl('line', { class: 'boundary-line', x1: bx, x2: bx, y1: M.top, y2: H - M.bottom }));
+const blabel = svgEl('text', { class: 'boundary-label', x: bx + 6, y: M.top + 12 });
+blabel.textContent = 'warmup ends (4.7s)';
+svg.appendChild(blabel);
+
+// build the two path segments (warmup / steady), each including the boundary point so
+// they meet with no gap
+function pathFor(points) {
+  return points.map((d, i) => (i === 0 ? 'M' : 'L') + x(d[0]).toFixed(2) + ',' + y(d[1]).toFixed(2)).join(' ');
+}
+const warmupPts = DATA.filter(d => d[0] <= BOUNDARY_T);
+const steadyPts = DATA.filter(d => d[0] >= BOUNDARY_T);
+if (warmupPts.length && steadyPts.length && warmupPts[warmupPts.length - 1][0] !== BOUNDARY_T) {
+  // ensure visual continuity even though there's no literal sample exactly at 4.7s
+  steadyPts.unshift(warmupPts[warmupPts.length - 1]);
+}
+svg.appendChild(svgEl('path', { class: 'line-warmup', d: pathFor(warmupPts) }));
+svg.appendChild(svgEl('path', { class: 'line-steady', d: pathFor(steadyPts) }));
+
+// crosshair + hover dot
+const crosshair = svgEl('line', { class: 'crosshair', x1: 0, x2: 0, y1: M.top, y2: H - M.bottom });
+svg.appendChild(crosshair);
+const hoverDot = svgEl('g', { class: 'hover-dot' });
+const hoverRing = svgEl('circle', { r: 6 });
+const hoverCore = svgEl('circle', { r: 4 });
+hoverDot.appendChild(hoverRing);
+hoverDot.appendChild(hoverCore);
+svg.appendChild(hoverDot);
+
+const hitLayer = svgEl('rect', {
+  class: 'hit-layer', x: M.left, y: M.top, width: plotW, height: plotH
+});
+svg.appendChild(hitLayer);
+
+const tooltip = document.getElementById('tooltip');
+const wrap = document.getElementById('chart-wrap');
+
+function nearestPoint(t) {
+  let best = DATA[0], bestDist = Infinity;
+  for (const d of DATA) {
+    const dist = Math.abs(d[0] - t);
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  }
+  return best;
+}
+
+function onMove(evt) {
+  const rect = svg.getBoundingClientRect();
+  const px = (evt.clientX - rect.left) * (W / rect.width);
+  const t = ((px - M.left) / plotW) * tMax;
+  if (t < 0 || t > tMax) return;
+  const d = nearestPoint(t);
+  const dx = x(d[0]), dy = y(d[1]);
+  crosshair.setAttribute('x1', dx); crosshair.setAttribute('x2', dx);
+  crosshair.style.opacity = 1;
+  hoverDot.setAttribute('transform', `translate(${dx},${dy})`);
+  hoverDot.style.opacity = 1;
+  const phase = d[0] <= BOUNDARY_T ? 'warmup' : 'steady state';
+  const color = d[0] <= BOUNDARY_T ? 'var(--series-warmup)' : 'var(--series-steady)';
+  hoverCore.setAttribute('fill', getComputedStyle(root).getPropertyValue(
+    d[0] <= BOUNDARY_T ? '--series-warmup' : '--series-steady'));
+
+  tooltip.innerHTML = '';
+  const valueEl = document.createElement('div');
+  valueEl.className = 't-value';
+  valueEl.textContent = d[1].toLocaleString() + ' pts';
+  const metaEl = document.createElement('div');
+  const key = document.createElement('span');
+  key.className = 't-key';
+  key.style.background = color;
+  metaEl.appendChild(key);
+  metaEl.appendChild(document.createTextNode('t=' + d[0].toFixed(2) + 's, ' + phase));
+  tooltip.appendChild(valueEl);
+  tooltip.appendChild(metaEl);
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const svgRect = svg.getBoundingClientRect();
+  const scale = svgRect.width / W;
+  let left = dx * scale + 14;
+  const tw = 160;
+  if (left + tw > wrapRect.width) left = dx * scale - tw - 14;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = (dy * scale - 10) + 'px';
+  tooltip.style.opacity = 1;
+}
+function onLeave() {
+  crosshair.style.opacity = 0;
+  hoverDot.style.opacity = 0;
+  tooltip.style.opacity = 0;
+}
+hitLayer.addEventListener('pointermove', onMove);
+hitLayer.addEventListener('pointerleave', onLeave);
+
+// table view
+const tbody = document.getElementById('table-body');
+for (const d of DATA) {
+  const tr = document.createElement('tr');
+  const c1 = document.createElement('td'); c1.textContent = d[0].toFixed(2);
+  const c2 = document.createElement('td'); c2.textContent = d[1].toLocaleString();
+  const c3 = document.createElement('td'); c3.textContent = d[0] <= BOUNDARY_T ? 'warmup' : 'steady state';
+  tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3);
+  tbody.appendChild(tr);
+}
+
+const btnChart = document.getElementById('btn-chart');
+const btnTable = document.getElementById('btn-table');
+const chartWrap = document.getElementById('chart-wrap');
+const dataTable = document.getElementById('data-table');
+btnChart.addEventListener('click', () => {
+  chartWrap.style.display = '';
+  dataTable.classList.remove('visible');
+  btnChart.setAttribute('aria-pressed', 'true');
+  btnTable.setAttribute('aria-pressed', 'false');
+});
+btnTable.addEventListener('click', () => {
+  chartWrap.style.display = 'none';
+  dataTable.classList.add('visible');
+  btnChart.setAttribute('aria-pressed', 'false');
+  btnTable.setAttribute('aria-pressed', 'true');
+});
+</script>
+</body>
+</html>
