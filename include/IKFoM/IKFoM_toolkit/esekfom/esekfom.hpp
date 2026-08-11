@@ -179,7 +179,7 @@ public:
 	}
 
 	bool update_iterated_dyn_share_modified() {
-		dyn_share_modified<scalar_type> dyn_share;
+		dyn_share_modified<scalar_type> &dyn_share = dyn_share_buf_;
 		state x_propagated = x_;
 		int dof_Measurement;
 		double m_noise;
@@ -312,8 +312,8 @@ public:
 	}
 
 	void update_iterated_dyn_share_IMU() {
-		
-		dyn_share_modified<scalar_type> dyn_share;
+
+		dyn_share_modified<scalar_type> &dyn_share = dyn_share_buf_;
 		for(int i=0; i<maximum_iter; i++)
 		{
 			dyn_share.valid = true;
@@ -404,7 +404,21 @@ private:
 
 	int maximum_iter = 0;
 	scalar_type limit[n];
-	
+
+	// Persistent scratch object for update_iterated_dyn_share_modified() and
+	// update_iterated_dyn_share_IMU() (both single-threaded, called sequentially, never
+	// concurrently, so sharing one instance across both is safe). Was previously a fresh
+	// stack-local dyn_share_modified<T> constructed on every call -- since T's h_x/z
+	// members are Eigen::Dynamic-sized, that meant a fresh heap allocation on every
+	// single point (dof_Measurement==1 in practice, see esekfom.hpp's fast path below,
+	// but a brand-new object has 0 capacity regardless of what size gets resized into
+	// next). Reusing one persistent instance means Eigen's resize() is a no-op once the
+	// buffer has already grown to the steady-state size (1x12 / 1), eliminating that
+	// allocation. Safe because both call sites unconditionally overwrite every field
+	// they read (valid, h_x, z, M_Noise / z_IMU, R_IMU, satu_check) before reading it --
+	// nothing here depends on a field retaining its value from a prior call.
+	dyn_share_modified<scalar_type> dyn_share_buf_;
+
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
