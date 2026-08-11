@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Per-point deskew vs single-pose batch transform: within-frame distortion</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --surface-2:      #f0efec;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #85837c;
+    --grid:           #e3e2dd;
+    --series-mean:    #2a78d6;
+    --series-p95:     #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --surface-2:      #232322;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #8f8e86;
+      --grid:           #333331;
+      --series-mean:    #3987e5;
+      --series-p95:     #d95926;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --surface-2:      #232322;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8f8e86;
+    --grid:           #333331;
+    --series-mean:    #3987e5;
+    --series-p95:     #d95926;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root {
+    background: var(--surface-1);
+    color: var(--text-primary);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 28px 32px 40px;
+    max-width: 920px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.note { color: var(--text-secondary); font-size: 13px; line-height: 1.5; max-width: 780px; }
+  p.note code { background: var(--surface-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+  .stats { display: flex; gap: 28px; margin: 16px 0 18px; flex-wrap: wrap; }
+  .stat { min-width: 120px; }
+  .stat .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .stat .value { font-size: 22px; font-weight: 600; color: var(--text-primary); }
+  .stat .value .unit { font-size: 13px; font-weight: 400; color: var(--text-secondary); }
+
+  .toolbar { display: flex; gap: 8px; align-items: center; margin: 14px 0 6px; }
+  .toolbar button {
+    font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 5px;
+    border: 1px solid var(--grid); background: var(--surface-2); color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .toolbar button[aria-pressed="true"] { color: var(--text-primary); border-color: var(--text-secondary); }
+
+  .legend { display: flex; gap: 18px; margin: 4px 0 12px; font-size: 12.5px; color: var(--text-secondary); }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+  svg { display: block; overflow: visible; font-family: inherit; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axis-text { fill: var(--text-muted); font-size: 11px; }
+  .axis-label { fill: var(--text-secondary); font-size: 12px; }
+  .line-mean { fill: none; stroke: var(--series-mean); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .line-p95 { fill: none; stroke: var(--series-p95); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+
+  .crosshair { stroke: var(--text-muted); stroke-width: 1; pointer-events: none; opacity: 0; }
+  .hover-dot circle { pointer-events: none; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity 0.08s;
+    background: var(--surface-2); border: 1px solid var(--grid); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--text-secondary); white-space: nowrap;
+  }
+  .tooltip .t-value { color: var(--text-primary); font-weight: 600; font-size: 13px; }
+  .tooltip .t-key { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+  .tooltip .row { margin-top: 2px; }
+
+  .hit-layer { fill: transparent; cursor: crosshair; }
+
+  table.data-table { border-collapse: collapse; font-size: 12px; margin-top: 10px; display: none; }
+  table.data-table.visible { display: table; }
+  table.data-table th, table.data-table td {
+    text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); color: var(--text-secondary);
+  }
+  table.data-table th { color: var(--text-muted); font-weight: 600; }
+  .table-wrap { max-height: 300px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+
+<h1>Per-point causal deskew vs single-pose batch transform: within-frame distortion</h1>
+<p class="note">
+  If near-field points were transformed to world frame with <i>one</i> pose per frame
+  (10&#8202;Hz, the platform's own <code>/aft_mapped_to_init</code>) instead of this
+  fork's actual per-point causal deskew, how much positional error would that
+  introduce within a single ~50&#8202;ms frame? Measured (not simulated) on a real
+  aggressive-motion segment of swarm1's flight (~1.5&#8202;m/s translational, restarted
+  from a calm IMU-init point ~6s before the fast segment). X-axis is each point's own
+  offset from the frame's reference-pose time; Y-axis is the 3D distance between that
+  point's naive single-pose position and its true per-point causally-deskewed position.
+</p>
+
+<div class="stats">
+  <div class="stat"><div class="label">Mean distortion</div><div class="value" id="stat-mean">&mdash;</div></div>
+  <div class="stat"><div class="label">P95 distortion</div><div class="value" id="stat-p95">&mdash;</div></div>
+  <div class="stat"><div class="label">Max observed</div><div class="value" id="stat-max">&mdash;</div></div>
+</div>
+
+<div class="toolbar">
+  <button id="btn-chart" aria-pressed="true">Chart</button>
+  <button id="btn-table" aria-pressed="false">Table</button>
+</div>
+
+<div class="legend">
+  <span class="key"><span class="swatch" style="background:var(--series-mean)"></span>mean distortion</span>
+  <span class="key"><span class="swatch" style="background:var(--series-p95)"></span>p95 distortion</span>
+</div>
+
+<div id="chart-wrap" style="position:relative;">
+  <svg id="chart" width="860" height="380" viewBox="0 0 860 380" role="img"
+       aria-label="Distortion decreases from about 60mm mean / 103mm p95 near frame start to about 51mm mean / 51mm p95 near frame end">
+  </svg>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<div class="table-wrap">
+  <table class="data-table" id="data-table">
+    <thead><tr><th>within-frame offset (ms)</th><th>mean (mm)</th><th>p95 (mm)</th><th>n samples</th></tr></thead>
+    <tbody id="table-body"></tbody>
+  </table>
+</div>
+
+</div>
+
+<script>
+const BINNED = [{"t_offset_ms": 2.5, "mean_mm": 59.190456153299536, "p95_mm": 103.50769945551683, "n": 180843}, {"t_offset_ms": 7.5, "mean_mm": 57.150183889223, "p95_mm": 89.61728711647963, "n": 166418}, {"t_offset_ms": 12.5, "mean_mm": 56.44655198983153, "p95_mm": 87.56703923194438, "n": 163848}, {"t_offset_ms": 17.5, "mean_mm": 54.88809280926684, "p95_mm": 76.73791948912044, "n": 171110}, {"t_offset_ms": 22.5, "mean_mm": 53.88638673268295, "p95_mm": 71.37579058043873, "n": 161579}, {"t_offset_ms": 27.5, "mean_mm": 52.50874624424912, "p95_mm": 65.636237522574, "n": 175466}, {"t_offset_ms": 32.5, "mean_mm": 51.666525645006764, "p95_mm": 60.58037526492002, "n": 160971}, {"t_offset_ms": 37.5, "mean_mm": 51.14934405168455, "p95_mm": 58.328146589084554, "n": 173822}, {"t_offset_ms": 42.5, "mean_mm": 50.815366773335526, "p95_mm": 55.339368336468596, "n": 163800}, {"t_offset_ms": 47.5, "mean_mm": 50.906418600086994, "p95_mm": 52.79265481116024, "n": 154418}, {"t_offset_ms": 52.5, "mean_mm": 51.12738816009842, "p95_mm": 51.430563406334265, "n": 604}];
+const OVERALL = {"mean": 54.043523491370024, "p95": 66.87297807800043, "max": 393.10186421729776};
+
+const root = document.getElementById('root');
+const svg = document.getElementById('chart');
+const W = 860, H = 380;
+const M = { top: 16, right: 16, bottom: 44, left: 56 };
+const plotW = W - M.left - M.right;
+const plotH = H - M.top - M.bottom;
+
+document.getElementById('stat-mean').innerHTML = OVERALL.mean.toFixed(1) + '<span class="unit"> mm</span>';
+document.getElementById('stat-p95').innerHTML = OVERALL.p95.toFixed(1) + '<span class="unit"> mm</span>';
+document.getElementById('stat-max').innerHTML = OVERALL.max.toFixed(1) + '<span class="unit"> mm</span>';
+
+const tMax = Math.max(...BINNED.map(d => d.t_offset_ms)) + 2.5;
+const yMax = Math.ceil(Math.max(...BINNED.map(d => d.p95_mm)) / 20) * 20;
+
+function x(t) { return M.left + (t / tMax) * plotW; }
+function y(v) { return M.top + plotH - (v / yMax) * plotH; }
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+const yStep = yMax / 5;
+for (let i = 0; i <= 5; i++) {
+  const v = i * yStep;
+  const gy = y(v);
+  svg.appendChild(svgEl('line', { class: 'gridline', x1: M.left, x2: W - M.right, y1: gy, y2: gy }));
+  const label = svgEl('text', { class: 'axis-text', x: M.left - 8, y: gy + 4, 'text-anchor': 'end' });
+  label.textContent = v.toFixed(0);
+  svg.appendChild(label);
+}
+for (let t = 0; t <= tMax; t += 10) {
+  const gx = x(t);
+  const label = svgEl('text', { class: 'axis-text', x: gx, y: H - M.bottom + 18, 'text-anchor': 'middle' });
+  label.textContent = t.toFixed(0);
+  svg.appendChild(label);
+}
+const xAxisLabel = svgEl('text', { class: 'axis-label', x: M.left + plotW / 2, y: H - 6, 'text-anchor': 'middle' });
+xAxisLabel.textContent = 'within-frame time offset (ms)';
+svg.appendChild(xAxisLabel);
+const yAxisLabel = svgEl('text', { class: 'axis-label', x: -(M.top + plotH / 2), y: 16, 'text-anchor': 'middle',
+                                    transform: 'rotate(-90)' });
+yAxisLabel.textContent = 'distortion (mm)';
+svg.appendChild(yAxisLabel);
+
+function pathFor(key) {
+  return BINNED.map((d, i) => (i === 0 ? 'M' : 'L') + x(d.t_offset_ms).toFixed(2) + ',' + y(d[key]).toFixed(2)).join(' ');
+}
+svg.appendChild(svgEl('path', { class: 'line-mean', d: pathFor('mean_mm') }));
+svg.appendChild(svgEl('path', { class: 'line-p95', d: pathFor('p95_mm') }));
+
+const crosshair = svgEl('line', { class: 'crosshair', x1: 0, x2: 0, y1: M.top, y2: H - M.bottom });
+svg.appendChild(crosshair);
+const dotMean = svgEl('g');
+dotMean.appendChild(svgEl('circle', { r: 6, fill: 'var(--surface-1)' }));
+dotMean.appendChild(svgEl('circle', { r: 4, fill: 'var(--series-mean)' }));
+svg.appendChild(dotMean);
+const dotP95 = svgEl('g');
+dotP95.appendChild(svgEl('circle', { r: 6, fill: 'var(--surface-1)' }));
+dotP95.appendChild(svgEl('circle', { r: 4, fill: 'var(--series-p95)' }));
+svg.appendChild(dotP95);
+dotMean.style.opacity = 0;
+dotP95.style.opacity = 0;
+
+const hitLayer = svgEl('rect', { class: 'hit-layer', x: M.left, y: M.top, width: plotW, height: plotH });
+svg.appendChild(hitLayer);
+
+const tooltip = document.getElementById('tooltip');
+const wrap = document.getElementById('chart-wrap');
+
+function nearestBin(t) {
+  let best = BINNED[0], bestDist = Infinity;
+  for (const d of BINNED) {
+    const dist = Math.abs(d.t_offset_ms - t);
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  }
+  return best;
+}
+
+function onMove(evt) {
+  const rect = svg.getBoundingClientRect();
+  const px = (evt.clientX - rect.left) * (W / rect.width);
+  const t = ((px - M.left) / plotW) * tMax;
+  if (t < 0 || t > tMax) return;
+  const d = nearestBin(t);
+  const dx = x(d.t_offset_ms);
+  crosshair.setAttribute('x1', dx); crosshair.setAttribute('x2', dx);
+  crosshair.style.opacity = 1;
+  dotMean.setAttribute('transform', `translate(${dx},${y(d.mean_mm)})`);
+  dotP95.setAttribute('transform', `translate(${dx},${y(d.p95_mm)})`);
+  dotMean.style.opacity = 1;
+  dotP95.style.opacity = 1;
+
+  tooltip.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 't-value';
+  header.textContent = 'offset ' + d.t_offset_ms.toFixed(1) + 'ms';
+  tooltip.appendChild(header);
+  const rowMean = document.createElement('div');
+  rowMean.className = 'row';
+  const keyMean = document.createElement('span');
+  keyMean.className = 't-key';
+  keyMean.style.background = 'var(--series-mean)';
+  rowMean.appendChild(keyMean);
+  rowMean.appendChild(document.createTextNode('mean ' + d.mean_mm.toFixed(1) + 'mm'));
+  tooltip.appendChild(rowMean);
+  const rowP95 = document.createElement('div');
+  rowP95.className = 'row';
+  const keyP95 = document.createElement('span');
+  keyP95.className = 't-key';
+  keyP95.style.background = 'var(--series-p95)';
+  rowP95.appendChild(keyP95);
+  rowP95.appendChild(document.createTextNode('p95 ' + d.p95_mm.toFixed(1) + 'mm'));
+  tooltip.appendChild(rowP95);
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const svgRect = svg.getBoundingClientRect();
+  const scale = svgRect.width / W;
+  let left = dx * scale + 14;
+  const tw = 140;
+  if (left + tw > wrapRect.width) left = dx * scale - tw - 14;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = (y(d.p95_mm) * scale - 10) + 'px';
+  tooltip.style.opacity = 1;
+}
+function onLeave() {
+  crosshair.style.opacity = 0;
+  dotMean.style.opacity = 0;
+  dotP95.style.opacity = 0;
+  tooltip.style.opacity = 0;
+}
+hitLayer.addEventListener('pointermove', onMove);
+hitLayer.addEventListener('pointerleave', onLeave);
+
+const tbody = document.getElementById('table-body');
+for (const d of BINNED) {
+  const tr = document.createElement('tr');
+  const c1 = document.createElement('td'); c1.textContent = d.t_offset_ms.toFixed(1);
+  const c2 = document.createElement('td'); c2.textContent = d.mean_mm.toFixed(1);
+  const c3 = document.createElement('td'); c3.textContent = d.p95_mm.toFixed(1);
+  const c4 = document.createElement('td'); c4.textContent = d.n.toLocaleString();
+  tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+  tbody.appendChild(tr);
+}
+
+const btnChart = document.getElementById('btn-chart');
+const btnTable = document.getElementById('btn-table');
+const chartWrap = document.getElementById('chart-wrap');
+const dataTable = document.getElementById('data-table');
+btnChart.addEventListener('click', () => {
+  chartWrap.style.display = '';
+  dataTable.classList.remove('visible');
+  btnChart.setAttribute('aria-pressed', 'true');
+  btnTable.setAttribute('aria-pressed', 'false');
+});
+btnTable.addEventListener('click', () => {
+  chartWrap.style.display = 'none';
+  dataTable.classList.add('visible');
+  btnChart.setAttribute('aria-pressed', 'false');
+  btnTable.setAttribute('aria-pressed', 'true');
+});
+</script>
+</body>
+</html>

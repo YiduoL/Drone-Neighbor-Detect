@@ -31,7 +31,10 @@ Mid-360 LiDAR. Two stages:</p>
     <a href="https://github.com/hku-mars/Point-LIO">Point-LIO</a>): every LiDAR point is
     deskewed <i>per-point</i>, causally, using the EKF state estimate at that exact
     instant -- not per-scan or per-frame, so there's no residual motion blur to correct
-    for downstream. Near-field points (where a neighbor drone would actually be) bypass
+    for downstream (measured: skipping this and using one pose per ~50ms frame instead
+    would introduce <a href="deskew_distortion.html">50-100mm of avoidable distortion</a>
+    during aggressive motion, worse for points early in the frame). Near-field points
+    (where a neighbor drone would actually be) bypass
     the main EKF update and any decimation entirely: zero dropped points, zero added
     latency, and a nearby target can never pollute the platform's own state estimate.</li>
   <li><b>Detection</b> (<code>detection/</code>): background subtraction and dynamic-point
