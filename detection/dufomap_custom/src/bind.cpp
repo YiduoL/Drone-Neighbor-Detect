@@ -187,8 +187,21 @@ NB_MODULE(dufomap_bind, m) {
              nb::arg("resolution"), nb::arg("d_s"), nb::arg("d_p"),
              nb::arg("num_threads") = 0, nb::arg("hit_extension") = true,
              nb::arg("ray_passthrough_hits") = false)
+        // gil_scoped_release: both methods do their real work entirely in C++ (a raw
+        // nanobind ndarray view in, either nothing or a freshly-allocated numpy array
+        // out via capsule) with no callback into Python in the hot loop, so releasing
+        // the GIL here is safe on its own terms. This is what makes it possible to run
+        // run() on a background Python thread and have it make real (not
+        // GIL-serialized) progress concurrently with the main thread's own Python-level
+        // work -- see causal_live.py's run() backgrounding. Correctness of run()/
+        // segment() never actually overlapping in time on the shared map_ is enforced
+        // by that Python-level synchronization (waiting for the previous frame's run()
+        // to finish before the next frame's segment() starts), not by the GIL -- the
+        // GIL was never doing that job for us even before this change (two separate
+        // calls from two threads would already interleave at the Python bytecode level
+        // without a race *within* a single call).
         .def("run", &DufomapCustom::run, nb::arg("points"), nb::arg("pose"),
-             nb::arg("cloud_transform") = true)
+             nb::arg("cloud_transform") = true, nb::call_guard<nb::gil_scoped_release>())
         .def("segment", &DufomapCustom::segment, nb::arg("points"), nb::arg("pose"),
-             nb::arg("cloud_transform") = true);
+             nb::arg("cloud_transform") = true, nb::call_guard<nb::gil_scoped_release>());
 }

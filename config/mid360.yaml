@@ -33,7 +33,87 @@
             imu_meas_omg_cov: 0.01 #0.1 # 2
             gyr_cov_input: 0.01 # for IMU as input model
             acc_cov_input: 0.1 # for IMU as input model
-            plane_thr: 0.1 # 0.05, the threshold for plane criteria, the smaller, the flatter a plane
+            plane_thr: 0.05 # was 0.1 (looser than code default); tightened back to code default (parameters.cpp
+                            # declares 0.05f) after tracing a spurious single-frame z-axis pose jump (~0.2-0.3m,
+                            # while stationary, t~15.5s/24.5s in lidar_1_ros2) to weak/noisy plane matches being
+                            # accepted under the looser threshold -- the smaller, the flatter a plane must be
+            use_surfel_map: false        # EXPERIMENTAL, default off: replace ikd-Tree's per-query
+                                         # k-NN-search + on-the-fly plane fit (nn_search was ~45% of
+                                         # per-point EKF update cost) with a hash-voxel map that
+                                         # caches one incrementally-fit plane per voxel -- query
+                                         # becomes O(1) hash lookup instead of a k-NN descent + QR
+                                         # solve. See include/surfel_map.h for the full rationale and
+                                         # why a naive hash-grid swap alone wouldn't help. Correctness
+                                         # verified against synthetic known-plane data only so far --
+                                         # not yet validated against real bag trajectories, hence off
+                                         # by default. Existing ikd-Tree path is completely unchanged
+                                         # when this is false.
+            surfel_map_voxel_size: 0.5  # matches filter_size_map's own default
+            surfel_map_min_points: 5    # below this, a voxel's plane fit is refused (query returns
+                                         # false, caller skips the point, same as ikd-Tree's own
+                                         # "not enough neighbors" path) -- see surfel_map.h
+            surfel_map_warmup_seconds: 10.0  # the surfel query is skipped entirely (falls straight
+                                         # to the normal ikd-Tree path, byte-for-byte -- see the
+                                         # divergence note above) until this many seconds after the
+                                         # first LiDAR frame, regardless of use_surfel_map. Testing on
+                                         # lidar_1_ros2 found real trajectory divergence when surfel
+                                         # queries were allowed from frame 0 -- most voxels haven't
+                                         # accumulated surfel_map_min_points yet that early, so the
+                                         # per-point ikd-Tree fallback (see Estimator.cpp) was
+                                         # firing on nearly every point anyway, for no speed benefit,
+                                         # while occasionally taking a still-noisy just-barely-valid
+                                         # surfel plane over a better ikd-Tree fit. This warmup keeps
+                                         # the path 100% off during the fragile early-convergence
+                                         # window and only lets it engage once the local map has had
+                                         # time to densify. Value not tuned against real data beyond
+                                         # this one bag -- treat as a starting point, not a validated
+                                         # constant.
+            ekf_group_batch: 1           # ABANDONED, keep at 1 (original behavior). Point-LIO
+                                         # natively groups points by identical curvature (its
+                                         # per-point relative-time field), which for this sensor
+                                         # yields ~1 point/group in practice -- confirmed via the
+                                         # "group_size" profiling metric (mean~1.0) -- i.e. one full
+                                         # predict+nn_search+esti_plane+EKF-update cycle PER
+                                         # INDIVIDUAL POINT, not per frame or per batch. Setting
+                                         # this >1 merges every N natural groups into one before the
+                                         # caller's EKF update, so ~N points share one predicted
+                                         # pose and one update instead of each having their own.
+                                         # TESTED at N=2 on lidar_1_ros2: made frame_e2e *worse*
+                                         # (29.9ms -> 32.5ms mean, climbing to 34-36ms over a 130s
+                                         # run) AND caused severe trajectory divergence (position
+                                         # estimate effectively froze ~48s in, 5-8m off from
+                                         # baseline by t=126-135s) -- the shared-pose approximation
+                                         # breaks Point-LIO's per-point motion-distortion correction
+                                         # (far points' plane residuals get computed against a pose
+                                         # that's really another point's, badly wrong once the
+                                         # platform has real angular velocity, and that bad residual
+                                         # then biases the EKF state itself, compounding frame to
+                                         # frame), while the Kalman-update matrix cost scales with
+                                         # total matched points regardless of batching (no real
+                                         # savings even in principle). See time_compressing() in
+                                         # common_lib.h. Do not revisit without addressing the
+                                         # shared-pose issue itself (e.g. per-point-interpolated
+                                         # residuals within a shared solve -- see
+                                         # ekf_update_stride below for a different, non-divergent
+                                         # way to cut update-cycle count instead).
+            ekf_update_stride: 1         # EXPERIMENTAL, default 1 (original behavior): every group
+                                         # gets a full nn_search+esti_plane+Kalman-update cycle, as
+                                         # before. Setting this to N>1 keeps the full per-group IMU
+                                         # predict + per-point pose interpolation + world-frame
+                                         # publish for EVERY point (detection's input is completely
+                                         # unaffected, still full resolution) but only runs the
+                                         # expensive measurement-correction step (nn_search +
+                                         # esti_plane + Kalman gain/state update) on every Nth
+                                         # group -- the other N-1 groups' points still get their own
+                                         # correctly time-propagated pose, they just don't receive
+                                         # that cycle's additional plane-match correction. This is
+                                         # NOT the same approximation ekf_group_batch made (points
+                                         # here never share another point's pose) -- see
+                                         # ekf_stride_counter in laserMapping.cpp. Not yet validated
+                                         # against real trajectories at any value >1; map density
+                                         # from skipped groups' points is preserved (they're still
+                                         # inserted, just without that frame's downsample-dedup
+                                         # check against fresh neighbor data) rather than dropped.
             match_s: 81.0
             fov_degree: 360.0
             det_range: 100.0

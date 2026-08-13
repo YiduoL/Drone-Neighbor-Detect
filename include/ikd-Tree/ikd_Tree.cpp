@@ -449,8 +449,14 @@ void KD_TREE<PointType>::Nearest_Search(PointType point, int k_nearest, PointVec
         pthread_mutex_unlock(&search_flag_mutex);
     }
     int k_found = min(k_nearest, int(q.size()));
+    // Point_Distance was already force-cleared (swap-with-empty-temp) at the top of this
+    // function and isn't touched in between -- clearing it again here is dead work
+    // (destroy+reconstruct an already-empty vector) on every single call. Called ~4750
+    // times/frame in this fork's per-point EKF update loop (see Estimator.cpp), so this
+    // was real, if small, repeated waste. Nearest_Points, unlike Point_Distance, is NOT
+    // cleared at the top of this function (the caller's vector is used as-is until now),
+    // so its swap-clear here is NOT redundant -- kept.
     PointVector().swap(Nearest_Points);
-    vector<float>().swap(Point_Distance);
     for (int i = 0; i < k_found; i++)
     {
         Nearest_Points.insert(Nearest_Points.begin(), q.top().point);

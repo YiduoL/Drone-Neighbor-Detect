@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,7 +33,20 @@ inline std::unordered_map<std::string, Accumulator> &registry() {
     return r;
 }
 
+// The per-point hot loop this is used inside of (Estimator.cpp's h_model_input/
+// h_model_output) is now OpenMP-parallelized (see the #pragma omp parallel for there) --
+// concurrent PROF_SCOPE/PROF_SAMPLE calls from multiple threads would otherwise race on
+// this shared unordered_map (registry()[name] can trigger a rehash, which is never safe
+// under concurrent access even to different keys). Only matters for POINTLIO_PROFILE
+// builds -- a normal build has none of this code at all (see the #else below). The lock
+// only guards the map mutation itself, not whatever's being timed.
+inline std::mutex &registry_mutex() {
+    static std::mutex m;
+    return m;
+}
+
 inline void record(const std::string &name, double value) {
+    std::lock_guard<std::mutex> lock(registry_mutex());
     registry()[name].samples.push_back(value);
 }
 

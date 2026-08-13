@@ -25,6 +25,7 @@ Usage:
 Stops on --max-frames / --max-seconds, or Ctrl-C (writes partial results either way).
 """
 import argparse
+import concurrent.futures
 import csv
 import json
 import os
@@ -66,10 +67,22 @@ class CausalLiveNode(Node):
     def __init__(self, args):
         super().__init__("causal_live_detect")
         self.args = args
-        self.dm = dufomap(args.voxel, args.d_s, args.d_p, num_threads=0)
+        self.dm = dufomap(args.voxel, args.d_s, args.d_p, num_threads=args.num_threads)
         self.rows = []
         self.frame_idx = 0
         self.done = False
+        # run() (far-field ray-cast integration) only feeds FUTURE frames' segment()
+        # calls -- segment(frame i) causally only ever needs map state as of run(frame
+        # i-1) completing (module docstring: "segment-before-run, history-only"), never
+        # this frame's own run(). So run() doesn't block THIS frame's segment(), only
+        # the NEXT one's -- background it on a single worker thread and wait for
+        # completion at the top of the NEXT on_frame() call instead of inline here.
+        # Judgement output is bit-identical either way (same map state read at the same
+        # logical point in the sequence, only the wall-clock moment it's computed
+        # shifts) -- see bind.cpp's gil_scoped_release comment for why this thread gets
+        # real (not GIL-serialized) concurrent progress, not just a superficial reorder.
+        self._run_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._pending_run = None
         # Per-point (not just per-frame-count) near-field records, only kept when
         # --save-points is set -- lets a later comparison match individual points by
         # world-frame position (not by array index, which two independent live runs
@@ -112,6 +125,17 @@ class CausalLiveNode(Node):
 
         i = self.frame_idx
         t0 = time.time()
+
+        # Block only if the PREVIOUS frame's run() genuinely hasn't finished yet by the
+        # time this frame arrives (~50ms later) -- in the common case it already has
+        # (run() measured at ~6-8ms, well inside that gap), so this returns immediately
+        # and t_wait_ms is ~0. This wait is the only place run() can still cost this
+        # frame anything.
+        if self._pending_run is not None:
+            self._pending_run.result()
+            self._pending_run = None
+        t_wait = time.time()
+
         if i == 0:
             near_labels = np.zeros(len(near_pts), dtype=np.uint8)
             far_labels = np.zeros(len(far_pts), dtype=np.uint8)
@@ -119,14 +143,22 @@ class CausalLiveNode(Node):
             near_labels = self.dm.segment(near_pts, pose, cloud_transform=False) if len(near_pts) else np.zeros(0, dtype=np.uint8)
             far_labels = self.dm.segment(far_pts, pose, cloud_transform=False) if len(far_pts) else np.zeros(0, dtype=np.uint8)
         t_seg = time.time()
-        self.dm.run(far_pts, pose, cloud_transform=False)
-        t_run = time.time()
+        # Submitted, not awaited -- returns immediately, actual run() executes on the
+        # background worker thread while this frame's remaining work (and the next
+        # frame's near/far filtering, up top) proceeds. Picked up at the top of the
+        # NEXT on_frame() call, not this one.
+        self._pending_run = self._run_executor.submit(
+            self.dm.run, far_pts, pose, cloud_transform=False)
 
         self.rows.append({
             "frame_idx": i, "t": stamp,
             "n_near": len(near_pts), "n_far": len(far_pts),
             "n_dynamic_near": int(near_labels.sum()), "n_dynamic_far": int(far_labels.sum()),
-            "t_segment_ms": (t_seg - t0) * 1000, "t_run_ms": (t_run - t_seg) * 1000,
+            "t_segment_ms": (t_seg - t_wait) * 1000,
+            # Renamed from run()'s own duration (that no longer blocks this frame) to
+            # what now actually costs this frame: time spent waiting for the PREVIOUS
+            # frame's backgrounded run() to finish, if it hadn't already.
+            "t_run_wait_ms": (t_wait - t0) * 1000,
         })
         if self.point_records is not None and len(near_pts):
             self.point_records.append((stamp, near_pts, near_labels))
@@ -134,7 +166,7 @@ class CausalLiveNode(Node):
             self.get_logger().info(
                 f"frame {i}: near={len(near_pts)} far={len(far_pts)} "
                 f"dyn_near={int(near_labels.sum())} "
-                f"seg={((t_seg - t0) * 1000):.2f}ms run={((t_run - t_seg) * 1000):.2f}ms")
+                f"seg={((t_seg - t_wait) * 1000):.2f}ms run_wait={((t_wait - t0) * 1000):.2f}ms")
         self.frame_idx += 1
 
         if self.args.max_frames and self.frame_idx >= self.args.max_frames:
@@ -148,9 +180,17 @@ class CausalLiveNode(Node):
             self.get_logger().warn("no frames received -- nothing to write "
                                     "(check topic names / that a bag was played)")
             return
+        # Wait for the last frame's backgrounded run() before finalizing -- not on
+        # anyone's critical path anymore, but avoids leaving it dangling on the
+        # executor thread across process shutdown.
+        if self._pending_run is not None:
+            self._pending_run.result()
+            self._pending_run = None
+        self._run_executor.shutdown(wait=True)
+
         os.makedirs(self.args.out_dir, exist_ok=True)
         fieldnames = ["frame_idx", "t", "n_near", "n_far", "n_dynamic_near",
-                      "n_dynamic_far", "t_segment_ms", "t_run_ms"]
+                      "n_dynamic_far", "t_segment_ms", "t_run_wait_ms"]
         csv_path = os.path.join(self.args.out_dir, "causal_live_per_frame.csv")
         with open(csv_path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -159,8 +199,12 @@ class CausalLiveNode(Node):
         self.get_logger().info(f"wrote {csv_path} ({len(self.rows)} frames)")
 
         t_seg = np.array([r["t_segment_ms"] for r in self.rows[1:]])  # skip frame 0
-        t_run = np.array([r["t_run_ms"] for r in self.rows])
-        t_total = t_seg + t_run[1:]
+        # t_run_wait_ms: time this frame spent blocked on the PREVIOUS frame's
+        # backgrounded run() (usually ~0, only nonzero if run() genuinely hadn't
+        # finished in the ~50ms since it was submitted) -- this, not run()'s own
+        # duration, is what's actually left on the critical path after backgrounding.
+        t_run_wait = np.array([r["t_run_wait_ms"] for r in self.rows])
+        t_total = t_seg + t_run_wait[1:]
         cn = np.array([r["n_dynamic_near"] for r in self.rows])
 
         summary = {
@@ -171,8 +215,8 @@ class CausalLiveNode(Node):
             "timing_ms": {
                 "segment_mean": float(t_seg.mean()), "segment_p95": float(np.percentile(t_seg, 95)),
                 "segment_p99": float(np.percentile(t_seg, 99)),
-                "run_mean": float(t_run.mean()), "run_p95": float(np.percentile(t_run, 95)),
-                "run_p99": float(np.percentile(t_run, 99)),
+                "run_wait_mean": float(t_run_wait.mean()), "run_wait_p95": float(np.percentile(t_run_wait, 95)),
+                "run_wait_p99": float(np.percentile(t_run_wait, 99)),
                 "total_mean": float(t_total.mean()), "total_p95": float(np.percentile(t_total, 95)),
                 "total_p99": float(np.percentile(t_total, 99)),
                 "frac_over_budget_pct": float((t_total > FRAME_BUDGET_MS).mean() * 100),
@@ -183,9 +227,9 @@ class CausalLiveNode(Node):
             json.dump(summary, f, indent=2)
         self.get_logger().info(f"wrote {summary_path}")
         self.get_logger().info(
-            f"LIVE detection timing (real Jetson, real subscriber): "
+            f"LIVE detection timing (real Jetson, real subscriber, run() backgrounded): "
             f"segment mean={t_seg.mean():.2f}ms p99={np.percentile(t_seg, 99):.2f}ms | "
-            f"run mean={t_run.mean():.2f}ms p99={np.percentile(t_run, 99):.2f}ms | "
+            f"run_wait mean={t_run_wait.mean():.2f}ms p99={np.percentile(t_run_wait, 99):.2f}ms | "
             f"total mean={t_total.mean():.2f}ms p99={np.percentile(t_total, 99):.2f}ms "
             f"(budget={FRAME_BUDGET_MS}ms, {summary['timing_ms']['frac_over_budget_pct']:.1f}% over)")
 
@@ -227,6 +271,12 @@ def main():
     ap.add_argument("--d-s", type=float, default=0.2)
     ap.add_argument("--d-p", type=int, default=2)
     ap.add_argument("--max-range", type=float, default=DEFAULT_MAX_RANGE)
+    ap.add_argument("--num-threads", type=int, default=0,
+                     help="dufomap's internal thread pool size (0: hardware_concurrency(), "
+                          "i.e. all 8 cores on Jetson -- competes with Point-LIO's own thread(s) "
+                          "for cycles every frame; set lower, e.g. 3-4, when running alongside "
+                          "Point-LIO on the same 8-core SoC, see taskset core-split notes in "
+                          "RUNTIME_OPTIMIZATION.md")
     ap.add_argument("--save-points", action="store_true",
                      help="also save per-point near-field xyz+label to near_points.npz, "
                           "for cross-run point-level precision/recall comparison")

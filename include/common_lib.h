@@ -80,8 +80,19 @@ T calc_dist(Eigen::Vector3d p1, PointType p2){
     return d;
 }
 
+// group_batch: EXPERIMENTAL, default 1 (byte-for-byte original behavior). Point-LIO
+// natively groups points by identical curvature (its per-point relative-time field),
+// which in practice yields ~1 point/group for this sensor -- i.e. one full
+// predict+nn_search+esti_plane+EKF-update cycle per individual point, not per frame.
+// group_batch > 1 merges every N consecutive natural groups into one before returning,
+// so the caller's per-group EKF update instead spans ~N points at once. This trades
+// per-point IMU-interpolated pose precision (points within a merged group are
+// evaluated against the same, slightly-stale predicted pose instead of one individually
+// predicted-forward per point) for fewer, larger EKF update cycles -- see
+// mapping.ekf_group_batch in mid360.yaml for the accuracy-vs-latency tradeoff this is
+// probing.
 template<typename T>
-std::vector<int> time_compressing(const PointCloudXYZI::Ptr &point_cloud)
+std::vector<int> time_compressing(const PointCloudXYZI::Ptr &point_cloud, int group_batch = 1)
 {
   int points_size = point_cloud->points.size();
   int j = 0;
@@ -105,7 +116,17 @@ std::vector<int> time_compressing(const PointCloudXYZI::Ptr &point_cloud)
   {
     time_seq.emplace_back(j+1);
   }
-  return time_seq;
+  if (group_batch <= 1) return time_seq;
+  std::vector<int> merged;
+  merged.reserve((time_seq.size() + group_batch - 1) / group_batch);
+  for (size_t i = 0; i < time_seq.size(); i += group_batch)
+  {
+    int sum = 0;
+    for (size_t j2 = i; j2 < std::min(i + (size_t)group_batch, time_seq.size()); j2++)
+      sum += time_seq[j2];
+    merged.emplace_back(sum);
+  }
+  return merged;
 }
 
 /* comment

@@ -8,7 +8,10 @@ PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
 std::vector<V3D> pbody_list;
 std::vector<PointVector> Nearest_Points;
+std::vector<bool> ekf_stride_skip_insert;
 KD_TREE<PointType> ikdtree;
+point_lio_experimental::SurfelMap *surfel_map = nullptr;
+bool surfel_map_past_warmup = false;
 std::vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
 bool point_selected_surf[100000] = {0};
 std::vector<M3D> crossmat_list;
@@ -182,52 +185,101 @@ vect3 SO3ToEuler(const SO3 &orient)
 void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_data)
 {
 	bool match_in_map = false;
-	VF(4) pabcd;
-	pabcd.setZero();
 	normvec->resize(time_seq[k]);
 	int effect_num_k = 0;
+	// pabcd and the neighbor-distance buffer are per-iteration-local (both used to be a
+	// single object reused/overwritten every iteration) -- kept that way even though
+	// this loop is serial, since it's correct and clearer either way.
+	//
+	// THIS FUNCTION IS DEAD CODE in the current config: mapping_mid360.launch.py
+	// hardcodes use_imu_as_input: false, so h_model_output (below) runs every frame,
+	// not this one -- confirmed via the live launch_params temp file. A long chain of
+	// OpenMP-parallelization experiments this session was run against THIS function
+	// before that was discovered, so all of that history (multiple rounds, eventually
+	// "validated" as a small win under taskset-isolated combined load) was actually
+	// measuring nothing. Once corrected by porting the identical pragma to
+	// h_model_output (the real hot path) under the same isolated-core methodology,
+	// the result reversed: worse, not better (frame_e2e 33-36ms mean vs. serial's
+	// ~30.75ms, p95/p99 43-46ms, one spike to 57ms) -- see h_model_output's HISTORY
+	// comment for the full account. Root cause: each call has ~1 point on average
+	// (group_size profiling metric), so there's essentially nothing to parallelize,
+	// only thread-spawn/reduction-coordination overhead to pay -- true of this
+	// function too, so do not re-attempt parallelizing this loop either without a
+	// fundamentally different batching approach.
 	for (int j = 0; j < time_seq[k]; j++)
 	{
 		PointType &point_body_j  = feats_down_body->points[idx+j+1];
 		PointType &point_world_j = feats_down_world->points[idx+j+1];
-		pointBodyToWorld(&point_body_j, &point_world_j); 
+		pointBodyToWorld(&point_body_j, &point_world_j);
 		V3D p_body = pbody_list[idx+j+1];
 		V3D p_world;
 		p_world << point_world_j.x, point_world_j.y, point_world_j.z;
-		
+		VF(4) pabcd;
+		pabcd.setZero();
+
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
+			std::vector<float> point_dist;
 
+			point_selected_surf[idx+j+1] = false;
+			bool plane_ok = false;
 			{
 				PROF_SCOPE("nn_search");
-				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); //1.0); //, 3.0); // 2.236;
+				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, point_dist, 2.236); //1.0); //, 3.0); // 2.236;
 			}
-
-			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5) // 5)
+			bool have_enough_neighbors = (points_near.size() >= NUM_MATCH_POINTS) && (point_dist[NUM_MATCH_POINTS - 1] <= 5);
+			if (use_surfel_map && surfel_map_past_warmup)
 			{
-				point_selected_surf[idx+j+1] = false;
-			}
-			else
-			{
-				point_selected_surf[idx+j+1] = false;
-				bool plane_ok;
+				// EXPERIMENTAL path -- see config/mid360.yaml's use_surfel_map comment.
+				// nn_search above still runs unconditionally (map_incremental() downstream
+				// needs Nearest_Points[i] for its own bookkeeping), so this path only ever
+				// saves esti_plane()'s per-query QR solve, not nn_search itself. On top of
+				// that: an early build showed real trajectory divergence (tested on
+				// lidar_1_ros2, x drifted to -7.5m in the first 25s where the platform is
+				// actually stationary) when a voxel without enough accumulated points was
+				// simply treated as "no plane, skip this point" -- during the first ~25s the
+				// local map is still sparse almost everywhere, so most points were getting
+				// dropped from the EKF update right when it's most fragile. Fixed by falling
+				// back to the exact same ikd-Tree nn_search + esti_plane() the non-surfel path
+				// uses whenever the surfel cache doesn't have a valid plane yet for this
+				// voxel -- so correctness never regresses below the original path, and the
+				// surfel shortcut only ever *adds* speed once a voxel is well-populated, never
+				// substitutes fewer/worse measurements for it.
+				Eigen::Vector4d surfel_plane;
+				bool surfel_ok;
 				{
 					PROF_SCOPE("esti_plane");
-					plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+					surfel_ok = surfel_map->query(p_world, surfel_plane);
 				}
-				if (plane_ok)
+				if (surfel_ok)
 				{
-					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
+					plane_ok = true;
+					pabcd(0) = surfel_plane(0); pabcd(1) = surfel_plane(1);
+					pabcd(2) = surfel_plane(2); pabcd(3) = surfel_plane(3);
+				}
+				else if (have_enough_neighbors)
+				{
+					PROF_SCOPE("esti_plane");
+					plane_ok = esti_plane(pabcd, points_near, plane_thr);
+				}
+			}
+			else if (have_enough_neighbors)
+			{
+				PROF_SCOPE("esti_plane");
+				plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+			}
+			if (plane_ok)
+			{
+				float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
 
-					if (p_body.norm() > match_s * pd2 * pd2)
-					{
-						point_selected_surf[idx+j+1] = true;
-						normvec->points[j].x = pabcd(0);
-						normvec->points[j].y = pabcd(1);
-						normvec->points[j].z = pabcd(2);
-						normvec->points[j].intensity = pabcd(3);
-						effect_num_k ++;
-					}
+				if (p_body.norm() > match_s * pd2 * pd2)
+				{
+					point_selected_surf[idx+j+1] = true;
+					normvec->points[j].x = pabcd(0);
+					normvec->points[j].y = pabcd(1);
+					normvec->points[j].z = pabcd(2);
+					normvec->points[j].intensity = pabcd(3);
+					effect_num_k ++;
 				}
 			}
 		}
@@ -282,53 +334,89 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data)
 {
 	bool match_in_map = false;
-	VF(4) pabcd;
-	pabcd.setZero();
-	
 	normvec->resize(time_seq[k]);
 	int effect_num_k = 0;
+	// THIS is the actually-active branch: mapping_mid360.launch.py hardcodes
+	// use_imu_as_input: false (overriding mid360.yaml's own value -- launch parameter
+	// lists are parsed in order with later entries winning), so h_model_output is what
+	// runs every frame, not h_model_input -- confirmed via the live launch_params temp
+	// file, not assumed (a session-long assumption to the contrary was wrong, and meant
+	// every earlier "OpenMP parallelization works when core-isolated" test this session
+	// was inadvertently exercising h_model_input's dead twin, not this function).
+	// HISTORY: tried `#pragma omp parallel for reduction(+:effect_num_k)
+	// schedule(dynamic) num_threads(4)` here (identical to what was validated -- on the
+	// wrong function -- earlier), taskset-isolated from detection (Point-LIO on cores
+	// 0-3, detection on 4-7) exactly as before. Result on the real hot path: worse, not
+	// better -- frame_e2e mean 33-36ms vs the plain-serial baseline's ~30.75ms, p95/p99
+	// 43-46ms, one spike to 57ms. Core isolation was never actually the fix for the
+	// earlier oversubscription failures; parallelizing this specific loop just doesn't
+	// help, whether isolated or not -- each call has ~1 point on average (group_size
+	// profiling metric, confirmed independent of which function runs), so there's
+	// essentially nothing to parallelize, only thread-spawn/reduction-coordination
+	// overhead to pay. Reverted; do not re-attempt without a fundamentally different
+	// approach to batching that doesn't just add a pragma to a ~1-iteration loop.
 	for (int j = 0; j < time_seq[k]; j++)
 	{
 		PointType &point_body_j  = feats_down_body->points[idx+j+1];
 		PointType &point_world_j = feats_down_world->points[idx+j+1];
-		pointBodyToWorld(&point_body_j, &point_world_j); 
+		pointBodyToWorld(&point_body_j, &point_world_j);
 		V3D p_body = pbody_list[idx+j+1];
 		V3D p_world;
 		p_world << point_world_j.x, point_world_j.y, point_world_j.z;
+		VF(4) pabcd;
+		pabcd.setZero();
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
+			std::vector<float> point_dist;
 
+			point_selected_surf[idx+j+1] = false;
+			bool plane_ok = false;
 			{
 				PROF_SCOPE("nn_search");
-				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236);
+				ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, point_dist, 2.236);
 			}
-
-			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
+			bool have_enough_neighbors = (points_near.size() >= NUM_MATCH_POINTS) && (point_dist[NUM_MATCH_POINTS - 1] <= 5);
+			if (use_surfel_map && surfel_map_past_warmup)
 			{
-				point_selected_surf[idx+j+1] = false;
-			}
-			else
-			{
-				point_selected_surf[idx+j+1] = false;
-				bool plane_ok;
+				// EXPERIMENTAL path -- see h_model_input's identical block above (including
+				// the divergence bug found + the ikd-Tree fallback that fixed it) for the
+				// full rationale.
+				Eigen::Vector4d surfel_plane;
+				bool surfel_ok;
 				{
 					PROF_SCOPE("esti_plane");
-					plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+					surfel_ok = surfel_map->query(p_world, surfel_plane);
 				}
-				if (plane_ok)
+				if (surfel_ok)
 				{
-					float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
+					plane_ok = true;
+					pabcd(0) = surfel_plane(0); pabcd(1) = surfel_plane(1);
+					pabcd(2) = surfel_plane(2); pabcd(3) = surfel_plane(3);
+				}
+				else if (have_enough_neighbors)
+				{
+					PROF_SCOPE("esti_plane");
+					plane_ok = esti_plane(pabcd, points_near, plane_thr);
+				}
+			}
+			else if (have_enough_neighbors)
+			{
+				PROF_SCOPE("esti_plane");
+				plane_ok = esti_plane(pabcd, points_near, plane_thr); //(planeValid)
+			}
+			if (plane_ok)
+			{
+				float pd2 = pabcd(0) * point_world_j.x + pabcd(1) * point_world_j.y + pabcd(2) * point_world_j.z + pabcd(3);
 
-					if (p_body.norm() > match_s * pd2 * pd2)
-					{
-						// point_selected_surf[i] = true;
-						point_selected_surf[idx+j+1] = true;
-						normvec->points[j].x = pabcd(0);
-						normvec->points[j].y = pabcd(1);
-						normvec->points[j].z = pabcd(2);
-						normvec->points[j].intensity = pabcd(3);
-						effect_num_k ++;
-					}
+				if (p_body.norm() > match_s * pd2 * pd2)
+				{
+					// point_selected_surf[i] = true;
+					point_selected_surf[idx+j+1] = true;
+					normvec->points[j].x = pabcd(0);
+					normvec->points[j].y = pabcd(1);
+					normvec->points[j].z = pabcd(2);
+					normvec->points[j].intensity = pabcd(3);
+					effect_num_k ++;
 				}
 			}
 		}

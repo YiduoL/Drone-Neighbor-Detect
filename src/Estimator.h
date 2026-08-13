@@ -10,6 +10,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <ikd-Tree/ikd_Tree.h>
 #include <pcl/io/pcd_io.h>
+#include "../include/surfel_map.h"
 
 extern PointCloudXYZI::Ptr normvec; //(new PointCloudXYZI(100000, 1));
 extern std::vector<int> time_seq;
@@ -17,7 +18,25 @@ extern PointCloudXYZI::Ptr feats_down_body; //(new PointCloudXYZI());
 extern PointCloudXYZI::Ptr feats_down_world; //(new PointCloudXYZI());
 extern std::vector<V3D> pbody_list;
 extern std::vector<PointVector> Nearest_Points;
+// ekf_update_stride EXPERIMENTAL (see config/mid360.yaml): true for points whose group
+// skipped this frame's measurement update (no fresh Nearest_Points -- see
+// laserMapping.cpp's k-loop). map_incremental() skips these entirely rather than
+// routing them through its no-dedup-info fallback path -- routing them there was tried
+// first and caused runaway ikd-Tree growth (undeduplicated points compounding every
+// frame, nn_search getting progressively slower, frame_e2e climbing 24ms->42ms+ over a
+// 130s run instead of dropping). assign()'d (not resize()'d) to false every frame in
+// laserMapping.cpp so stale true values never leak across frames at reused indices.
+extern std::vector<bool> ekf_stride_skip_insert;
 extern KD_TREE<PointType> ikdtree;
+// EXPERIMENTAL (see config/mid360.yaml's use_surfel_map comment + include/surfel_map.h):
+// nullptr unless use_surfel_map is true, constructed once in main() after parameters
+// load (needs surfel_map_voxel_size, not available at static-init time). Never touched
+// when use_surfel_map is false -- existing ikdtree path is byte-for-byte unchanged.
+extern point_lio_experimental::SurfelMap *surfel_map;
+// Set every frame in laserMapping.cpp's main loop once (lidar_beg_time - first_lidar_time)
+// exceeds surfel_map_warmup_seconds -- see that config option's comment. Surfel queries in
+// Estimator.cpp are gated on use_surfel_map && surfel_map_past_warmup, both.
+extern bool surfel_map_past_warmup;
 extern std::vector<float> pointSearchSqDis;
 extern bool point_selected_surf[100000]; // = {0};
 extern std::vector<M3D> crossmat_list;

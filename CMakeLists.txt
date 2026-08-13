@@ -60,6 +60,14 @@ endif()
 # ARM baseline ISA the compiler defaults to. Probed via check_cxx_compiler_flag rather
 # than assumed, since this must still build on non-Orin aarch64 / older GCC. Deliberately
 # NOT -march=native: the binary may run on a different machine than it was built on.
+#
+# Cascading fallback: confirmed on this fork's actual target (JetPack 5.1.1, GCC 9.4.0)
+# that -mcpu=cortex-a78ae is NOT recognized (too new a core name for this GCC release --
+# Cortex-A78 was announced after GCC9), silently falling back to plain -O3 with no
+# CPU-specific codegen at all, not even a reasonable approximation. Cortex-A78AE is a
+# direct microarchitectural descendant of the A76/A77 line, and GCC9 DOES recognize
+# cortex-a76 (confirmed via a direct compiler probe on the actual Jetson) -- a much
+# closer target than the ISA-baseline default, even though it's not an exact match.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64)|(arm64)")
   include(CheckCXXCompilerFlag)
   check_cxx_compiler_flag("-mcpu=cortex-a78ae" COMPILER_SUPPORTS_CORTEX_A78AE)
@@ -67,7 +75,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64)|(arm64)")
     add_compile_options(-mcpu=cortex-a78ae)
     message(STATUS "aarch64: targeting -mcpu=cortex-a78ae")
   else()
-    message(STATUS "aarch64: -mcpu=cortex-a78ae not supported by this compiler, staying with plain -O3 -DNDEBUG")
+    check_cxx_compiler_flag("-mcpu=cortex-a76" COMPILER_SUPPORTS_CORTEX_A76)
+    if(COMPILER_SUPPORTS_CORTEX_A76)
+      add_compile_options(-mcpu=cortex-a76)
+      message(STATUS "aarch64: -mcpu=cortex-a78ae not supported, falling back to -mcpu=cortex-a76 (closest recognized microarchitectural relative)")
+    else()
+      message(STATUS "aarch64: neither -mcpu=cortex-a78ae nor -mcpu=cortex-a76 supported by this compiler, staying with plain -O3 -DNDEBUG")
+    endif()
   endif()
 endif()
 

@@ -518,7 +518,25 @@ void map_incremental() {
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
 
+    if (use_surfel_map) {
+        // Every point that reaches map_incremental() is a candidate map point --
+        // insert all of them into the surfel map's running per-voxel moments (O(1)
+        // amortized each, no eager plane refit -- see surfel_map.h). This runs
+        // regardless of whether ikd-Tree's own downsample-box check below would have
+        // accepted the point, since the surfel map has its own, separate voxel
+        // aggregation and isn't trying to mirror ikd-Tree's exact point count.
+        for (int i = 0; i < feats_down_size; i++) {
+            const auto &p = feats_down_world->points[i];
+            surfel_map->insert(Eigen::Vector3d(p.x, p.y, p.z));
+        }
+    }
+
     for (int i = 0; i < feats_down_size; i++) {
+        // ekf_update_stride EXPERIMENTAL: points whose group skipped this frame's
+        // measurement update are excluded from the map entirely -- see
+        // ekf_stride_skip_insert's comment in Estimator.h. Empty/false (the array's
+        // reset state) for every point when ekf_update_stride is at its default of 1.
+        if (ekf_stride_skip_insert[i]) continue;
         if (!Nearest_Points[i].empty()) {
             const PointVector &points_near = Nearest_Points[i];
             bool need_add = true;
@@ -983,6 +1001,13 @@ int main(int argc, char **argv) {
     readParameters(nh);
     cout << "lidar_type: " << lidar_type << endl;
 
+    if (use_surfel_map) {
+        // Constructed here, not at static-init time, since surfel_map_voxel_size only
+        // becomes available after readParameters() above. Left as nullptr (never
+        // touched) when use_surfel_map is false.
+        surfel_map = new point_lio_experimental::SurfelMap(surfel_map_voxel_size, surfel_map_min_points);
+    }
+
     path.header.stamp = get_ros_time(lidar_end_time);
     path.header.frame_id = odom_header_frame_id;
 
@@ -1123,11 +1148,18 @@ int main(int argc, char **argv) {
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     rclcpp::Rate rate(5000);
+    // Constructed once, outside the loop: this used to be built fresh on every
+    // iteration of a ~5000Hz spin loop (up to ~250 executor constructions per actual
+    // 20Hz LiDAR frame while sync_packages() has nothing to do yet) -- each
+    // construction sets up its own wait-set (epoll/condition-variable registration
+    // against every subscription/timer on the node), which is real kernel-level
+    // setup/teardown churn, not something CPU core-pinning can isolate. Reusing one
+    // executor across iterations just re-polls the same wait-set via spin_some().
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(nh);
     while (rclcpp::ok()) {
         if (flg_exit) break;
         //ros::spinOnce();
-        rclcpp::executors::SingleThreadedExecutor executor;
-        executor.add_node(nh);
         executor.spin_some(); // process currently available callbacks
 
         if (sync_packages(Measures)) {
@@ -1143,6 +1175,10 @@ int main(int argc, char **argv) {
                 flg_reset = false;
                 continue;
             }
+            // See config/mid360.yaml's surfel_map_warmup_seconds comment: keeps the
+            // surfel-map query path fully off (falls straight to the ikd-Tree path,
+            // byte-for-byte) until the local map has had time to densify.
+            surfel_map_past_warmup = (Measures.lidar_beg_time - first_lidar_time) > surfel_map_warmup_seconds;
             double t0, t1, t2, t3, t4, t5, match_start, solve_start;
             match_time = 0;
             solve_time = 0;
@@ -1206,7 +1242,7 @@ int main(int argc, char **argv) {
                 feats_down_body = Measures.lidar;
                 sort(feats_down_body->points.begin(), feats_down_body->points.end(), time_list);
             }
-            time_seq = time_compressing<int>(feats_down_body);
+            time_seq = time_compressing<int>(feats_down_body, ekf_group_batch);
             feats_down_size = feats_down_body->points.size();
 
             // Near-field deskew extension: time-sort this frame's near-field points and
@@ -1240,6 +1276,10 @@ int main(int argc, char **argv) {
             feats_down_world->resize(feats_down_size);
 
             Nearest_Points.resize(feats_down_size);
+            // ekf_update_stride EXPERIMENTAL: assign() (not resize()) so every index is
+            // explicitly reset to false each frame -- resize() alone would leave stale
+            // `true` values at reused indices from a previous frame. See Estimator.h.
+            ekf_stride_skip_insert.assign(feats_down_size, false);
 
             t2 = omp_get_wtime();
 
@@ -1274,6 +1314,7 @@ int main(int argc, char **argv) {
 
                 double pcl_beg_time = Measures.lidar_beg_time;
                 idx = -1;
+                int ekf_stride_counter = 0;
                 for (k = 0; k < time_seq.size(); k++) {
                     PointType &point_body = feats_down_body->points[idx + time_seq[k]];
 
@@ -1359,14 +1400,43 @@ int main(int argc, char **argv) {
                         idx += time_seq[k];
                         continue;
                     }
-                    bool kf_output_ok;
-                    {
-                        PROF_SCOPE("ekf_update");
-                        kf_output_ok = kf_output.update_iterated_dyn_share_modified();
-                    }
-                    if (!kf_output_ok) {
-                        idx = idx + time_seq[k];
-                        continue;
+
+                    // ekf_update_stride EXPERIMENTAL (see config/mid360.yaml for full rationale
+                    // and how this differs from the abandoned ekf_group_batch). This is the
+                    // ACTUALLY-ACTIVE branch: mapping_mid360.launch.py hardcodes
+                    // use_imu_as_input: false (overriding mid360.yaml's own value, since
+                    // launch parameter lists are parsed in order with later entries winning),
+                    // so kf_output/h_model_output is what runs, not kf_input/h_model_input --
+                    // confirmed via the live launch_params temp file, not assumed. The predict()
+                    // calls above already ran unconditionally, so every group -- update or not --
+                    // still gets its own correctly time-propagated pose; only the expensive
+                    // measurement correction (nn_search+esti_plane+Kalman update, inside
+                    // update_iterated_dyn_share_modified()) is skipped on non-stride groups.
+                    bool do_full_update = (ekf_update_stride <= 1) ||
+                                          (ekf_stride_counter % ekf_update_stride == 0);
+                    ekf_stride_counter++;
+
+                    if (do_full_update) {
+                        bool kf_output_ok;
+                        {
+                            PROF_SCOPE("ekf_update");
+                            kf_output_ok = kf_output.update_iterated_dyn_share_modified();
+                        }
+                        if (!kf_output_ok) {
+                            idx = idx + time_seq[k];
+                            continue;
+                        }
+                    } else {
+                        // No fresh Nearest_Points this cycle for these indices. First attempt
+                        // routed them through map_incremental()'s "no dedup info" fallback
+                        // (PointNoNeedDownsample) instead -- caused runaway ikd-Tree growth (see
+                        // ekf_stride_skip_insert's comment in Estimator.h for what that looked
+                        // like). These points are still published (pointBodyToWorld below runs
+                        // unconditionally, detection's input is unaffected) but are excluded from
+                        // map_incremental() entirely.
+                        for (int j = 0; j < time_seq[k]; j++) {
+                            ekf_stride_skip_insert[idx + j + 1] = true;
+                        }
                     }
 
                     if (prop_at_freq_of_imu) {
@@ -1419,6 +1489,7 @@ int main(int argc, char **argv) {
 
                 double pcl_beg_time = Measures.lidar_beg_time;
                 idx = -1;
+                int ekf_stride_counter = 0;
                 for (k = 0; k < time_seq.size(); k++) {
                     PointType &point_body = feats_down_body->points[idx + time_seq[k]];
                     time_current = point_body.curvature / 1000.0 + pcl_beg_time;
@@ -1519,14 +1590,38 @@ int main(int argc, char **argv) {
                         idx += time_seq[k];
                         continue;
                     }
-                    bool kf_input_ok;
-                    {
-                        PROF_SCOPE("ekf_update");
-                        kf_input_ok = kf_input.update_iterated_dyn_share_modified();
-                    }
-                    if (!kf_input_ok) {
-                        idx = idx + time_seq[k];
-                        continue;
+
+                    // ekf_update_stride EXPERIMENTAL (see config/mid360.yaml for full rationale
+                    // and how this differs from the abandoned ekf_group_batch): the predict()
+                    // calls above already ran unconditionally, so every group -- update or not --
+                    // still gets its own correctly time-propagated pose. Only the expensive
+                    // measurement correction (nn_search+esti_plane+Kalman update, all inside
+                    // update_iterated_dyn_share_modified()) is skipped on non-stride groups.
+                    bool do_full_update = (ekf_update_stride <= 1) ||
+                                          (ekf_stride_counter % ekf_update_stride == 0);
+                    ekf_stride_counter++;
+
+                    if (do_full_update) {
+                        bool kf_input_ok;
+                        {
+                            PROF_SCOPE("ekf_update");
+                            kf_input_ok = kf_input.update_iterated_dyn_share_modified();
+                        }
+                        if (!kf_input_ok) {
+                            idx = idx + time_seq[k];
+                            continue;
+                        }
+                    } else {
+                        // No fresh Nearest_Points this cycle for these indices. Excluded from
+                        // map_incremental() entirely via ekf_stride_skip_insert -- see that flag's
+                        // comment in Estimator.h for why (routing them through the "no dedup info"
+                        // fallback instead caused runaway ikd-Tree growth in testing). This branch
+                        // is currently dead code: mapping_mid360.launch.py hardcodes
+                        // use_imu_as_input: false, so kf_output/h_model_output (the other branch,
+                        // above) is what actually runs -- kept here in sync for if that ever flips.
+                        for (int j = 0; j < time_seq[k]; j++) {
+                            ekf_stride_skip_insert[idx + j + 1] = true;
+                        }
                     }
 
                     solve_start = omp_get_wtime();
