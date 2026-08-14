@@ -22,9 +22,11 @@ as few as 5-15 LiDAR points.
 
 **Status at a glance:** Part I is implemented and validated (see §4). Part II's core
 algorithm is implemented and validated offline against recorded flights (see
-[`detection/README.md`](detection/README.md)) but has **not** been benchmarked on the
-Jetson target or wired into a live ROS2 node — see Part II §3 for the precise scope of
-what "real-time" does and does not mean here.
+[`detection/README.md`](detection/README.md)) **and** has been deployed as a live ROS2
+node (`detection/causal_live.py`) and benchmarked on the Jetson target — see Part II §3
+and [`RUNTIME_OPTIMIZATION.md`](RUNTIME_OPTIMIZATION.md) for real Jetson latency numbers
+and the concurrent-workload (Point-LIO + detector running together) figures that
+actually matter for deployment.
 
 ---
 
@@ -153,7 +155,7 @@ cut removes points only in a region no real target ever occupies).
 | C1 — decoupled full-resolution near-field deskew | Implemented, validated |
 | C2 — fixed-lag RTS smoothed refinement (v1) | Implemented, validated |
 | Cylindrical near-field gate | Implemented, validated |
-| Downstream detection (causal DUFOMap) | Validated offline (see Part II); not yet on Jetson or live |
+| Downstream detection (causal DUFOMap) | Validated offline (see Part II); deployed live on Jetson (`detection/causal_live.py`), see [`RUNTIME_OPTIMIZATION.md`](RUNTIME_OPTIMIZATION.md) |
 
 **Primary use case is zero-latency avoidance, which consumes C1 only.** C2 adds a fixed
 0.1 s latency in exchange for a smoother trajectory and is available for
@@ -265,12 +267,19 @@ synchronized).
 ## 3. What "causal" does and does not mean here
 
 - **Architecturally causal / real-time-compatible:** the algorithm never uses future
-  data, and measured per-frame cost (~7-10 ms on a desktop x86 machine) is well within
-  a 10 Hz frame budget.
-- **Not yet benchmarked on Jetson**, the actual deployment target. Desktop timing
-  numbers do not necessarily transfer.
-- **Not yet a live ROS2 node.** All evaluation here reads recorded bags offline; there
-  is no node subscribing to a real-time topic and publishing detections.
+  data.
+- **Benchmarked live on the actual Jetson target** (`detection/causal_live.py`, a real
+  ROS2 node subscribing to Point-LIO's published topics — not an offline bag read).
+  With `run()` (map integration) backgrounded off the critical path (see
+  [`RUNTIME_OPTIMIZATION.md`](RUNTIME_OPTIMIZATION.md) — `segment()` for frame *i* is
+  causally independent of frame *i*'s own `run()`, so integration can execute
+  concurrently while later work proceeds, verified bit-identical output either way),
+  the detector's own critical-path cost is under 1ms/frame on Jetson, running
+  concurrently with Point-LIO. **Point-LIO's own per-frame cost, not the detector's, is
+  the dominant term in combined-workload latency** — see
+  [`RUNTIME_OPTIMIZATION.md`](RUNTIME_OPTIMIZATION.md) for the current end-to-end
+  number and the concurrent-workload caveats that don't show up in either component
+  benchmarked alone.
 - **Background subtraction (used only to build evaluation labels) is offline**, an ICP
   registration against a pre-built static reference map. It is not part of, and is not
   needed for, the causal detector's own real-time path.
@@ -306,5 +315,8 @@ synchronized).
   flights (no shared clock was available) — a documented, only partially mitigated
   source of label noise.
 - Evaluated on two flights at one site; no cross-site generalization evidence yet.
-- See §3 above for the real-time verification gap (Jetson benchmark, live ROS2
-  integration) — both are future work, not yet done.
+- The offline evaluation (§2, pseudo-GT metrics) and the live Jetson deployment (§3)
+  have not yet been run as a single combined pass — recall/precision numbers above are
+  from the offline path, latency numbers are from the live path. Re-running the
+  pseudo-GT evaluation through `causal_live.py` itself (not just the offline
+  `causal_vs_batch.py`) would close this gap.

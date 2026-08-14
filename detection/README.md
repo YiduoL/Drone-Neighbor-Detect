@@ -8,17 +8,48 @@ no look-ahead) online detector.
 
 ## Status and scope
 
-This is a validation study, not a deployed real-time system. What has been shown:
+The causal reformulation (§1 below) has been deployed live on the actual Jetson
+deployment target (`causal_live.py`, a real ROS2 node -- see "Live deployment" below),
+not just validated offline. What has been shown:
 
-- The causal reformulation (§1 below) is architecturally online and its per-frame cost
-  on a desktop x86 machine is well within a 10 Hz frame budget.
-- It has **not** been benchmarked on the actual Jetson deployment target.
-- It has **not** been wired up as a live ROS2 node subscribing to a real-time topic --
-  all evaluation here reads recorded bags offline.
+- The causal reformulation is architecturally online, and its own critical-path cost
+  on Jetson is under 1ms/frame (see "Live deployment" below) -- Point-LIO's own
+  per-frame cost dominates the combined-workload latency, not the detector's.
+- Everything in §2-4 below (the ablations, the pseudo-GT precision/recall numbers, the
+  cold-start/hovering findings) was evaluated **offline** against recorded bags, not
+  through the live node -- the live deployment work so far has been a latency/timing
+  study (§ below), not a repeat of the offline accuracy evaluation. See
+  `../PIPELINE.md` §II.5 for this gap.
 - The background-subtraction step used to build evaluation labels (§2) is itself an
   offline batch process (ICP registration against a pre-built static reference map) --
   it is **not** part of the real-time detection path; it exists only to produce
   ground-truth labels for evaluating the causal detector.
+
+## Live deployment (Jetson)
+
+`causal_live.py` subscribes to Point-LIO's published topics directly (no bag-reading
+library needed) and runs the same causal `segment()`-then-`run()` logic as the offline
+scripts, in real time. See its own module docstring for the two-terminal usage
+(`python3 causal_live.py <out_dir>` then `ros2 bag play <bag>` in a second terminal --
+or a real live sensor instead of a bag).
+
+**Jetson-specific build**: the official `pip install dufomap` package ships no
+`aarch64` wheels. `dufomap_custom/` is a from-scratch nanobind binding around the same
+underlying `UFO::Map` C++ library (which *is* public), built for Jetson -- see
+[`dufomap_custom/README.md`](dufomap_custom/README.md) for why it exists, the build
+steps, and a real ARM-specific correctness bug it fixes that the reference
+implementation doesn't hit on x86.
+
+`run()` (map integration) executes on a background thread, off the per-frame critical
+path: causally, `segment()` for frame *i* only ever needs the map state as of frame
+*i-1*'s `run()` completing, never frame *i*'s own -- so `run()` doesn't block the frame
+that triggered it, only the next one (and in practice usually finishes well before the
+next frame arrives anyway). This changes *when* `run()`'s ~6-8ms of work happens, not
+*what* it computes -- verified to produce bit-identical detection output against the
+non-backgrounded version on a fixed recorded input (see `dufomap_custom/src/bind.cpp`'s
+`gil_scoped_release` for why the background thread gets real, not GIL-serialized,
+concurrent progress). See [`../RUNTIME_OPTIMIZATION.md`](../RUNTIME_OPTIMIZATION.md)
+for the full latency investigation and current numbers.
 
 ## 1. Causal DUFOMap
 
@@ -92,6 +123,7 @@ recall broken down by elapsed time (cold-start behavior) and by range.
 
 | Script | Purpose |
 |---|---|
+| `causal_live.py` | **Live deployment.** Real ROS2 node, real-time detection on Point-LIO's published topics -- not an offline bag read. See "Live deployment" above. |
 | `background_subtraction.py` | Register a flight to a static reference map; classify near-field points as background/foreground. Offline, used only for building evaluation labels. |
 | `build_pseudo_labels.py` | Combine background subtraction with the other flight's registered trajectory into per-point pseudo-GT labels. |
 | `common_eval.py` | Shared data loading, pseudo-GT lookup, and metrics accumulation used by the ablation scripts. |
@@ -135,3 +167,10 @@ pip install dufomap open3d scipy scikit-learn pandas
 ```
 
 Also requires `rosbag2_py` / `rclpy` (from a sourced ROS2 install) to read bag files.
+
+**On Jetson (aarch64):** `pip install dufomap` has no `aarch64` wheels -- build
+`dufomap_custom/` instead (see [its README](dufomap_custom/README.md) for exact steps)
+and use it as a drop-in replacement; `causal_live.py`'s `from dufomap import dufomap`
+import works unchanged against either. `causal_live.py` itself only needs `rclpy` +
+`message_filters` + `sensor_msgs_py`, all in a standard ROS2 install -- no
+`rosbag2_py` (Foxy, this fork's tested Jetson target, never packaged it).
